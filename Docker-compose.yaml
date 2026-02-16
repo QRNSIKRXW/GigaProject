@@ -1,0 +1,83 @@
+services:
+
+  nginx:
+    build:
+      context: ./docker/nginx
+    ports:
+      - "80:80"
+    depends_on:
+      - api-service
+
+  api-service:
+    build:
+      context: ./api-service
+      dockerfile: ../docker/go-service/Dockerfile
+    container_name: api-service
+    ports:
+      - "8080:8080"
+    depends_on:
+      - redis
+    environment:
+      - REDIS_ADDR=redis:6379
+
+  api-worker:
+    build:
+      context: ./api-worker
+      dockerfile: ../docker/go-service/Dockerfile
+    container_name: api-worker
+    depends_on:
+      - redis
+    environment:
+      - REDIS_ADDR=redis:6379
+
+  go-worker:
+    build:
+      context: ./go-worker
+      dockerfile: ../docker/go-service/Dockerfile
+    container_name: go-worker
+    depends_on:
+      - redis
+    environment:
+      - REDIS_ADDR=redis:6379
+
+  python-worker:
+    build:
+      context: ./python-worker
+      dockerfile: ../docker/go-service/Dockerfile
+    container_name: python-worker
+    depends_on:
+      - redis
+    environment:
+      - REDIS_ADDR=redis:6379
+
+  redis:
+    image: redis:7
+    container_name: redis
+    ports:
+      - "6379:6379"
+
+  prometheus:
+    image: prom/prometheus
+    container_name: prometheus
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    depends_on:
+      - api-service
+      - api-worker
+      - go-worker
+      - python-worker
+
+  grafana:
+    image: grafana/grafana
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    volumes:
+      - grafana-data:/var/lib/grafana
+
+volumes:
+  grafana-data:
