@@ -2,6 +2,7 @@ package ws
 
 import (
 	"log"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -17,8 +18,7 @@ func (c *Client) writePump(h *Hub) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer func() {
 		ticker.Stop()
-		h.unregister <- c
-		c.WebSocket.Close()
+		_ = c.WebSocket.Close()
 	}()
 
 	c.WebSocket.SetCloseHandler(func(code int, text string) error {
@@ -28,13 +28,11 @@ func (c *Client) writePump(h *Hub) {
 
 	for {
 		select {
-
 		case msg, ok := <-c.Send:
 			if !ok {
-				c.WebSocket.WriteMessage(websocket.CloseMessage, []byte{})
+				_ = c.WebSocket.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
-
 			if err := c.WebSocket.WriteMessage(websocket.TextMessage, msg); err != nil {
 				return
 			}
@@ -57,7 +55,6 @@ func (c *Client) readPump(h *Hub) {
 	c.WebSocket.SetReadDeadline(time.Now().Add(30 * time.Second))
 
 	c.WebSocket.SetPongHandler(func(string) error {
-		// клиент ответил pong → продлеваем дедлайн
 		c.WebSocket.SetReadDeadline(time.Now().Add(30 * time.Second))
 		return nil
 	})
@@ -65,7 +62,22 @@ func (c *Client) readPump(h *Hub) {
 	for {
 		_, _, err := c.WebSocket.ReadMessage()
 		if err != nil {
-			break
+			// ВАЖНО: если это нормальное закрытие — просто выходим
+			if websocket.IsCloseError(err,
+				websocket.CloseNormalClosure,
+				websocket.CloseGoingAway,
+				websocket.CloseNoStatusReceived,
+			) {
+				return
+			}
+
+			// ВАЖНО: если это EOF — НЕ закрываем соединение
+			if strings.Contains(err.Error(), "EOF") {
+				continue
+			}
+
+			// Любая другая ошибка — закрываем
+			return
 		}
 	}
 }
