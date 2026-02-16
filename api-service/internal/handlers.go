@@ -17,7 +17,7 @@ func GoRunHandler(client *redis.Client) http.HandlerFunc {
 
 		ip := r.RemoteAddr
 
-		if err := RateLimit(client, r.Context(), ip, 10); err != nil {
+		if err := RateLimit(client, r.Context(), ip, 20); err != nil {
 
 			log.Println(err)
 			w.Header().Set("Content-Type", "application/json")
