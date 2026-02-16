@@ -1,14 +1,15 @@
 package ws
 
 import (
+	"net/http"
 	"sync"
 
 	"github.com/gorilla/websocket"
 )
 
 type BroadcastMessage struct {
-	TaskId string
-	Line   string
+	TaskId string `json:"taskId"`
+	Line   string `json:"line"`
 }
 
 type Hub struct {
@@ -23,6 +24,13 @@ type Hub struct {
 var Upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
+	CheckOrigin: func(r *http.Request) bool {
+		// тут можно сделать тоньше: проверять конкретный домен
+		// origin := r.Header.Get("Origin")
+		// пример: разрешаем только твой фронтенд
+		// return origin == "https://your-frontend-domain"
+		return true // временно, чтобы не ломать, но лучше ужесточить
+	},
 }
 
 func (h *Hub) StartHub() {

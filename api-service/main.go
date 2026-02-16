@@ -41,7 +41,7 @@ func main() {
 
 	r.HandleFunc("/ws", ws.ConnectionHandler(hub, client))
 
-	r.HandleFunc("/api/history?cursor", internal.HistoryHandler(client)).Methods("GET")
+	r.HandleFunc("/api/history", internal.HistoryHandler(client)).Methods("GET")
 	r.HandleFunc("/api/run/go", internal.GoRunHandler(client)).Methods("POST")
 	r.HandleFunc("/api/run/python", internal.PyRunHandler(client)).Methods("POST")
 	r.HandleFunc("/api/result/{id}", internal.ReturnHandler(client)).Methods("GET")

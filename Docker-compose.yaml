@@ -1,12 +1,17 @@
+version: "3.9"
+
 services:
 
   nginx:
     build:
-      context: ./docker/nginx
+      context: .
+      dockerfile: ./docker/nginx/Dockerfile
     ports:
       - "80:80"
     depends_on:
       - api-service
+    networks:
+      - appnet
 
   api-service:
     build:
@@ -15,46 +20,56 @@ services:
     container_name: api-service
     ports:
       - "8080:8080"
-    depends_on:
-      - redis
     environment:
       - REDIS_ADDR=redis:6379
+    depends_on:
+      - redis
+    networks:
+      - appnet
 
   api-worker:
     build:
       context: ./api-worker
       dockerfile: ../docker/go-service/Dockerfile
     container_name: api-worker
-    depends_on:
-      - redis
     environment:
       - REDIS_ADDR=redis:6379
+    depends_on:
+      - redis
+    networks:
+      - appnet
 
   go-worker:
     build:
       context: ./go-worker
       dockerfile: ../docker/go-service/Dockerfile
     container_name: go-worker
-    depends_on:
-      - redis
     environment:
       - REDIS_ADDR=redis:6379
+    depends_on:
+      - redis
+    networks:
+      - appnet
 
   python-worker:
     build:
       context: ./python-worker
       dockerfile: ../docker/go-service/Dockerfile
     container_name: python-worker
-    depends_on:
-      - redis
     environment:
       - REDIS_ADDR=redis:6379
+    depends_on:
+      - redis
+    networks:
+      - appnet
 
   redis:
     image: redis:7
     container_name: redis
     ports:
       - "6379:6379"
+    networks:
+      - appnet
 
   prometheus:
     image: prom/prometheus
@@ -68,6 +83,8 @@ services:
       - api-worker
       - go-worker
       - python-worker
+    networks:
+      - appnet
 
   grafana:
     image: grafana/grafana
@@ -78,6 +95,12 @@ services:
       - prometheus
     volumes:
       - grafana-data:/var/lib/grafana
+    networks:
+      - appnet
 
 volumes:
   grafana-data:
+
+networks:
+  appnet:
+    driver: bridge

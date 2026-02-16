@@ -15,7 +15,10 @@ func GoRunHandler(client *redis.Client) http.HandlerFunc {
 
 	resultFunc := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
-		ip := r.RemoteAddr
+		ip := r.Header.Get("X-Real-IP")
+		if ip == "" {
+			ip = r.RemoteAddr
+		}
 
 		if err := RateLimit(client, r.Context(), ip, 20); err != nil {
 
@@ -124,6 +127,24 @@ func GoRunHandler(client *redis.Client) http.HandlerFunc {
 func PyRunHandler(client *redis.Client) http.HandlerFunc {
 
 	resultFunc := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
+		ip := r.Header.Get("X-Real-IP")
+		if ip == "" {
+			ip = r.RemoteAddr
+		}
+
+		if err := RateLimit(client, r.Context(), ip, 20); err != nil {
+
+			log.Println(err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			json.NewEncoder(w).Encode(ErrorResponse{
+				Error: err.Error(),
+			})
+
+			return
+
+		}
 
 		if r.Method != http.MethodPost {
 
@@ -406,7 +427,7 @@ func HistoryHandler(client *redis.Client) http.HandlerFunc {
 
 		stop := start + int64(limit)
 
-		tasksIdArr, err := client.LRange(ctx, "user:"+ownerId, start, stop).Result()
+		tasksIdArr, err := client.LRange(ctx, "user:"+ownerId+":tasks", start, stop).Result()
 		if err != nil {
 
 			log.Println("error:", err)

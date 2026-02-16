@@ -19,7 +19,7 @@ func ConnectionHandler(hub *Hub, client *redis.Client) http.HandlerFunc {
 
 		ws, err := Upgrader.Upgrade(w, r, nil)
 		if err != nil {
-			log.Fatal("connection error")
+			log.Println("upgrade error", err)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)
 			json.NewEncoder(w).Encode(map[string]string{"Error": "connection error"})

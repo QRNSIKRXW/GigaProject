@@ -112,7 +112,7 @@ func runDocker(client *redis.Client, dir string, ctx context.Context, filename s
 		scanner := bufio.NewScanner(stderrPipe)
 		for scanner.Scan() {
 			middleResult := scanner.Text()
-			outBuf.Write([]byte(middleResult + "\n"))
+			errBuf.Write([]byte(middleResult + "\n"))
 			WritePubSub(client, ctx, middleResult, id)
 		}
 	}()
@@ -167,7 +167,7 @@ func createRequest(ctx context.Context, dir string, filename string) (cmd *exec.
 }
 
 func recoverPending(client *redis.Client, ctx context.Context, stream string,
-	group string, pendingIdle time.Duration, maxRetries int64) ([]PendingTask, error) {
+	group string, pendingIdle time.Duration) ([]PendingTask, error) {
 
 	tasks := make([]PendingTask, 0, 10)
 
@@ -221,7 +221,7 @@ func claimAndExecute(worker *Worker, ctx context.Context, recoverIdArr []string)
 
 		result := ExecuteTask(worker.client, task)
 
-		if result.Result == "done" {
+		if result.Status == "done" {
 			worker.processed++
 		} else {
 			worker.failed++

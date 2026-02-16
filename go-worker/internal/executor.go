@@ -93,7 +93,7 @@ func runDocker(client *redis.Client, dir string, ctx context.Context, filename s
 	stderrPipe, _ := cmd.StderrPipe()
 
 	if err := cmd.Start(); err != nil {
-		return "", "", fmt.Errorf("docker start error: %w", err)
+		return "", "", fmt.Errorf("docker start error: %w", err) // потом поменять на internal error
 	}
 
 	outBuf := NewLimitedBuffer(1_000_000)
@@ -112,7 +112,7 @@ func runDocker(client *redis.Client, dir string, ctx context.Context, filename s
 		scanner := bufio.NewScanner(stderrPipe)
 		for scanner.Scan() {
 			middleResult := scanner.Text()
-			outBuf.Write([]byte(middleResult + "\n"))
+			errBuf.Write([]byte(middleResult + "\n"))
 			WritePubSub(client, ctx, middleResult, id)
 		}
 	}()
@@ -221,7 +221,7 @@ func claimAndExecute(worker *Worker, ctx context.Context, recoverIdArr []string)
 
 		result := ExecuteTask(worker.client, task)
 
-		if result.Result == "done" {
+		if result.Status == "done" {
 			worker.processed++
 		} else {
 			worker.failed++

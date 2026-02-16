@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <title>Playground</title>
+  <link rel="stylesheet" href="/main.css" />
+</head>
+<body>
+  <h1>Web Playground</h1>
+
+  <div>
+    <label>Язык:</label>
+    <select id="lang">
+      <option value="go">Go</option>
+      <option value="python">Python</option>
+    </select>
+  </div>
+
+  <div>
+    <textarea id="code" rows="15" cols="80">// Напиши здесь код</textarea>
+  </div>
+
+  <button id="runBtn">Запустить</button>
+
+  <h2>Стрим вывода</h2>
+  <pre id="stream"></pre>
+
+  <h2>Финальный результат</h2>
+  <pre id="result"></pre>
+
+  <h2>История</h2>
+  <button id="loadHistory">Загрузить историю</button>
+  <ul id="history"></ul>
+
+  <script src="/main.js"></script>
+</body>
+</html>

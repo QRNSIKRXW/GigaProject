@@ -37,7 +37,7 @@ func main() {
 
 	srv := &http.Server{
 		Handler: r,
-		Addr:    "8080",
+		Addr:    ":8080",
 	}
 
 	log.Println("server started on :8080")

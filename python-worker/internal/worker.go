@@ -65,7 +65,7 @@ func (worker *Worker) recoveryLoop(ctx context.Context) {
 		}
 
 		recoverArr, err := recoverPending(worker.client, ctx, worker.stream,
-			worker.group, worker.pendingIdle, worker.maxRetries)
+			worker.group, worker.pendingIdle)
 		if err != nil || len(recoverArr) == 0 {
 			log.Printf("[worker %s] recovery error: %v", worker.consumerID, err)
 			time.Sleep(3 * time.Second)
