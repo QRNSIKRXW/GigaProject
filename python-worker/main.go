@@ -10,18 +10,13 @@ import (
 	"syscall"
 
 	"github.com/QRNSIKRXW/GigaProject/python-worker/internal"
+	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
 
-	go func() {
-		http.Handle("/metrics", promhttp.Handler())
-		log.Println("metrics server started on :9100")
-		if err := http.ListenAndServe(":9100", nil); err != nil {
-			log.Fatalf("metrics server failed: %v", err)
-		}
-	}()
+	r := mux.NewRouter()
 
 	client := internal.StartRedis()
 
@@ -31,10 +26,19 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
+	r.Handle("/metrics", promhttp.Handler())
+
 	err := worker.StartWorker(ctx, wg)
 	if err != nil {
 		log.Fatal("failed to create consumer group: %w", err)
 	}
+
+	go func() {
+		log.Println("python-worker metrics on :9101")
+		if err := http.ListenAndServe(":9101", r); err != nil {
+			log.Fatalf("metrics server failed: %v", err)
+		}
+	}()
 
 	sigs := make(chan os.Signal, 1)
 

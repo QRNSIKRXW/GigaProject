@@ -10,6 +10,7 @@ import (
 type Task struct {
 	Id   string
 	Code string
+	Lang string
 }
 
 func ParseTask(msg redis.XMessage) (Task, error) {
@@ -37,7 +38,8 @@ var WrongTask = Task{
 }
 
 type RunResponse struct {
-	Id string `json:"id"`
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
 }
 
 type ErrorResponse struct {
@@ -64,3 +66,15 @@ type PendingTask struct {
 }
 
 const MaxCodeSize = 64 * 1024
+
+type RunRequest struct {
+	TaskId   string `json:"taskId"`
+	Dir      string `json:"dir"`
+	Lang     string `json:"lang"`
+	Filename string `json:"filename"`
+}
+
+type RedisLine struct {
+	TaskId string `json:"taskId"`
+	Line   string `json:"line"`
+}

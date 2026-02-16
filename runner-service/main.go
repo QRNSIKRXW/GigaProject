@@ -10,6 +10,7 @@ import (
 
 	"github.com/QRNSIKRXW/GigaProject/runner-service/internal"
 	"github.com/gorilla/mux"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
@@ -20,6 +21,8 @@ func main() {
 	runner := &internal.Runner{}
 
 	r := mux.NewRouter()
+
+	r.Handle("/metrics", promhttp.Handler())
 
 	r.HandleFunc("/", internal.RunHandler(client, runner))
 

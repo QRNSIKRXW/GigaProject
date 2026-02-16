@@ -1,21 +1,20 @@
 package internal
 
 import (
-	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 )
 
 func ExecuteTask(client *redis.Client, task Task) (result TaskStatus) {
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
 
 	dir, err := CreateTempDir()
 	if err != nil {
@@ -36,25 +35,98 @@ func ExecuteTask(client *redis.Client, task Task) (result TaskStatus) {
 		}
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sub := client.Subscribe(ctx, "channel:broadcast")
+	ch := sub.Channel()
+
+	buffer := NewLimitedBuffer(1_000_000)
+
+	go func() {
+
+		for msg := range ch {
+
+			var line RedisLine
+			json.Unmarshal([]byte(msg.Payload), &line)
+
+			if line.TaskId != task.Id {
+				continue
+			}
+
+			buffer.Write([]byte(line.Line + "\n"))
+
+		}
+
+	}()
+
 	filename := "main.go"
 
-	stdout, stderr, codeErr := runDocker(client, dir, ctx, filename, task.Id)
-	if codeErr != nil {
+	req := RunRequest{
+		TaskId:   task.Id,
+		Dir:      dir,
+		Lang:     task.Lang,
+		Filename: filename,
+	}
 
+	body, _ := json.Marshal(req)
+
+	resp, err := http.Post("http://runner-service:9000/", "application/json", bytes.NewBuffer(body))
+	if err != nil {
+		result.Status = "error"
+		result.Error = "internal error"
+		result.Result = ""
+		return result
+	}
+
+	cancel()
+	sub.Close()
+
+	var runRes RunResponse
+	json.NewDecoder(resp.Body).Decode(&runRes)
+	if runRes.Status == "error" {
 		return TaskStatus{
 			Status: "error",
 			Result: "",
-			Error:  codeErr.Error(),
+			Error:  runRes.Error,
 		}
+	}
 
+	output := buffer.String()
+
+	if containsUserError(output) {
+		codeErr := extractErrorLine(output)
+		return TaskStatus{
+			Status: "failed",
+			Result: output,
+			Error:  codeErr,
+		}
 	}
 
 	return TaskStatus{
 		Status: "done",
-		Result: stdout,
-		Error:  stderr,
+		Result: output,
+		Error:  "",
 	}
 
+}
+
+func containsUserError(out string) bool {
+	return strings.Contains(out, "panic") ||
+		strings.Contains(out, "Traceback") ||
+		strings.Contains(out, "error:")
+}
+
+func extractErrorLine(out string) string {
+	lines := strings.Split(out, "\n")
+	for _, l := range lines {
+		if strings.Contains(l, "panic") ||
+			strings.Contains(l, "Traceback") ||
+			strings.Contains(l, "error:") {
+			return l
+		}
+	}
+	return ""
 }
 
 func CreateTempDir() (string, error) {
@@ -83,87 +155,6 @@ func writeCodeFile(dir string, task Task) (string, error) {
 
 	return fileName, nil
 
-}
-
-func runDocker(client *redis.Client, dir string, ctx context.Context, filename string, id string) (stdout string, stderr string, codeErr error) {
-
-	cmd := createRequest(ctx, dir, filename)
-
-	stdoutPipe, _ := cmd.StdoutPipe()
-	stderrPipe, _ := cmd.StderrPipe()
-
-	if err := cmd.Start(); err != nil {
-		return "", "", fmt.Errorf("docker start error: %w", err) // потом поменять на internal error
-	}
-
-	outBuf := NewLimitedBuffer(1_000_000)
-	errBuf := NewLimitedBuffer(1_000_000)
-
-	go func() {
-		scanner := bufio.NewScanner(stdoutPipe)
-		for scanner.Scan() {
-			middleResult := scanner.Text()
-			outBuf.Write([]byte(middleResult + "\n"))
-			WritePubSub(client, ctx, middleResult, id)
-		}
-	}()
-
-	go func() {
-		scanner := bufio.NewScanner(stderrPipe)
-		for scanner.Scan() {
-			middleResult := scanner.Text()
-			errBuf.Write([]byte(middleResult + "\n"))
-			WritePubSub(client, ctx, middleResult, id)
-		}
-	}()
-
-	err := cmd.Wait()
-
-	if ctx.Err() == context.DeadlineExceeded {
-		return "", "timeout", fmt.Errorf("execution timeout")
-	}
-
-	stdout = outBuf.String()
-	stderr = errBuf.String()
-
-	// Ошибка выполнения контейнера
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-
-			switch exitErr.ExitCode() {
-			case 125, 126, 127:
-				return "", "", fmt.Errorf("docker crashed (exit code %d)", exitErr.ExitCode()) // потом поменять internal error
-			default:
-				// обычная ошибка пользовательского кода
-				return stdout, stderr, nil
-			}
-		}
-
-		// docker не запустился вообще
-		return "", "", fmt.Errorf("docker hadnt been started") // потом поменять на internal error
-	}
-
-	// Успешное выполнение
-	return stdout, stderr, nil
-}
-
-func createRequest(ctx context.Context, dir string, filename string) (cmd *exec.Cmd) {
-
-	args := []string{
-		"run",
-		"--rm",
-		"--network", "none",
-		"--memory", "128m",
-		"--cpus", "0.5",
-		"--pids-limit", "64",
-		"--read-only",
-		"--tmpfs", "/tmp:rw,size=16m",
-		"-v", dir + ":/code",
-		"gorunner",
-		"go", "run", "/code/" + filename,
-	}
-
-	return exec.CommandContext(ctx, "docker", args...)
 }
 
 func recoverPending(client *redis.Client, ctx context.Context, stream string,

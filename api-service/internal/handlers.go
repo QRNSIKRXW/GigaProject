@@ -283,15 +283,22 @@ func ReturnHandler(client *redis.Client) http.HandlerFunc {
 
 		requestOwner := cookie.Value
 		savedOwner, err := client.HGet(r.Context(), "task:"+id, "owner").Result()
-		if err != nil {
 
-			log.Println("error", err)
-			w.Header().Set("Content-Type", "application/json")
+		if err == redis.Nil {
+			// задача ещё не создана → возвращаем 202 PENDING
+			w.WriteHeader(http.StatusAccepted)
+			json.NewEncoder(w).Encode(map[string]string{
+				"status": "pending",
+			})
+			return
+		}
+
+		if err != nil {
+			// реальная ошибка Redis
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(ErrorResponse{
 				Error: "internal error",
 			})
-
 			return
 		}
 
@@ -311,7 +318,7 @@ func ReturnHandler(client *redis.Client) http.HandlerFunc {
 		status, err := GetStatus(ctx, client, id)
 		if err != nil {
 
-			log.Println("error", err)
+			log.Println("ReturnHandler: GetStatus failed:", err, "task:", id)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)
 			json.NewEncoder(w).Encode(ErrorResponse{

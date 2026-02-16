@@ -14,15 +14,15 @@ type data struct {
 }
 
 func ConnectionHandler(hub *Hub, client *redis.Client) http.HandlerFunc {
-
-	resultFunc := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
 
 		ws, err := Upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			log.Println("upgrade error", err)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)
-			json.NewEncoder(w).Encode(map[string]string{"Error": "connection error"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"Error": "connection error"})
+			return
 		}
 
 		_, msg, err := ws.ReadMessage()
@@ -32,12 +32,10 @@ func ConnectionHandler(hub *Hub, client *redis.Client) http.HandlerFunc {
 		}
 
 		var msgData data
-		json.Unmarshal(msg, &msgData)
-
-		hubClient := Client{
-			WebSocket: ws,
-			Send:      make(chan []byte),
-			TaskId:    msgData.TaskId,
+		if err := json.Unmarshal(msg, &msgData); err != nil {
+			ws.WriteMessage(websocket.CloseMessage, []byte("bad payload"))
+			ws.Close()
+			return
 		}
 
 		cookie, err := r.Cookie("owner")
@@ -56,11 +54,16 @@ func ConnectionHandler(hub *Hub, client *redis.Client) http.HandlerFunc {
 			return
 		}
 
+		hubClient := &Client{
+			WebSocket: ws,
+			Send:      make(chan []byte, 16), // буфер, чтобы не блокироваться
+			TaskId:    msgData.TaskId,
+		}
+
+		// ВАЖНО: регистрируем клиента в хабе
+		hub.register <- hubClient
+
 		go hubClient.writePump(hub)
 		go hubClient.readPump(hub)
-
-	})
-
-	return resultFunc
-
+	}
 }

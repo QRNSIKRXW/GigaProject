@@ -16,14 +16,6 @@ import (
 
 func main() {
 
-	go func() {
-		http.Handle("/metrics", promhttp.Handler())
-		log.Println("metrics server started on :9100")
-		if err := http.ListenAndServe(":9100", nil); err != nil {
-			log.Fatalf("metrics server failed: %v", err)
-		}
-	}()
-
 	client := internal.StartRedis()
 	defer client.Close()
 
@@ -36,6 +28,8 @@ func main() {
 	go ws.StartPubSubListener(ctx, client, hub)
 
 	r := mux.NewRouter()
+
+	r.Handle("/metrics", promhttp.Handler())
 
 	// r.HandleFunc("/", Home) - хендлер для главной страницы выбора песочницы
 
@@ -52,7 +46,11 @@ func main() {
 		Addr:    ":8080",
 	}
 
-	go srv.ListenAndServe()
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("api-service failed: %v", err)
+		}
+	}()
 
 	sigChan := make(chan os.Signal, 1)
 

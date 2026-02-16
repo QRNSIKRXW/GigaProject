@@ -1,15 +1,12 @@
 version: "3.9"
 
 services:
-
-  nginx:
-    build:
-      context: .
-      dockerfile: ./docker/nginx/Dockerfile
+  redis:
+    image: redis:7
+    container_name: redis
+    restart: always
     ports:
-      - "80:80"
-    depends_on:
-      - api-service
+      - "6379:6379"
     networks:
       - appnet
 
@@ -18,12 +15,13 @@ services:
       context: ./api-service
       dockerfile: ../docker/go-service/Dockerfile
     container_name: api-service
-    ports:
-      - "8080:8080"
+    restart: always
     environment:
       - REDIS_ADDR=redis:6379
     depends_on:
       - redis
+    ports:
+      - "8000:8080"
     networks:
       - appnet
 
@@ -32,10 +30,29 @@ services:
       context: ./api-worker
       dockerfile: ../docker/go-service/Dockerfile
     container_name: api-worker
+    restart: always
     environment:
       - REDIS_ADDR=redis:6379
     depends_on:
       - redis
+    ports:
+      - "8081:8080"
+    networks:
+      - appnet
+
+  runner-service:
+    build:
+      context: ./runner-service
+    container_name: runner-service
+    restart: always
+    environment:
+      - REDIS_ADDR=redis:6379
+    depends_on:
+      - redis
+    ports:
+      - "9000:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - appnet
 
@@ -44,10 +61,15 @@ services:
       context: ./go-worker
       dockerfile: ../docker/go-service/Dockerfile
     container_name: go-worker
+    restart: always
     environment:
       - REDIS_ADDR=redis:6379
+      - RUNNER_URL=http://runner-service:9000
     depends_on:
       - redis
+      - runner-service
+    expose:
+      - "9102"   # внутренний порт для Prometheus
     networks:
       - appnet
 
@@ -56,50 +78,41 @@ services:
       context: ./python-worker
       dockerfile: ../docker/go-service/Dockerfile
     container_name: python-worker
+    restart: always
     environment:
       - REDIS_ADDR=redis:6379
+      - RUNNER_URL=http://runner-service:9000
     depends_on:
       - redis
+      - runner-service
+    expose:
+      - "9101"   # внутренний порт для Prometheus
     networks:
       - appnet
 
-  redis:
-    image: redis:7
-    container_name: redis
+  nginx:
+    build:
+      context: .
+      dockerfile: ./docker/nginx/Dockerfile
+    container_name: nginx
+    restart: always
+    depends_on:
+      - api-service
     ports:
-      - "6379:6379"
+      - "80:80"
     networks:
       - appnet
 
   prometheus:
     image: prom/prometheus
     container_name: prometheus
+    restart: always
     volumes:
-      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - "./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml"
     ports:
       - "9090:9090"
-    depends_on:
-      - api-service
-      - api-worker
-      - go-worker
-      - python-worker
     networks:
       - appnet
-
-  grafana:
-    image: grafana/grafana
-    container_name: grafana
-    ports:
-      - "3000:3000"
-    depends_on:
-      - prometheus
-    volumes:
-      - grafana-data:/var/lib/grafana
-    networks:
-      - appnet
-
-volumes:
-  grafana-data:
 
 networks:
   appnet:
