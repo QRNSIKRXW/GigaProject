@@ -4,10 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -15,25 +12,6 @@ import (
 )
 
 func ExecuteTask(client *redis.Client, task Task) (result TaskStatus) {
-
-	dir, err := CreateTempDir()
-	if err != nil {
-		return TaskStatus{
-			Status: "error",
-			Result: "",
-			Error:  err.Error(),
-		}
-	}
-	defer os.RemoveAll(dir)
-
-	_, err = writeCodeFile(dir, task)
-	if err != nil {
-		return TaskStatus{
-			Status: "error",
-			Result: "",
-			Error:  err.Error(),
-		}
-	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -60,18 +38,15 @@ func ExecuteTask(client *redis.Client, task Task) (result TaskStatus) {
 
 	}()
 
-	filename := "main.go"
-
 	req := RunRequest{
-		TaskId:   task.Id,
-		Dir:      dir,
-		Lang:     task.Lang,
-		Filename: filename,
+		TaskId: task.Id,
+		Lang:   task.Lang,
+		Code:   task.Code,
 	}
 
 	body, _ := json.Marshal(req)
 
-	resp, err := http.Post("http://runner-service:9000/", "application/json", bytes.NewBuffer(body))
+	resp, err := http.Post("http://host.docker.internal:9000/", "application/json", bytes.NewBuffer(body))
 	if err != nil {
 		result.Status = "error"
 		result.Error = "internal error"
@@ -79,8 +54,8 @@ func ExecuteTask(client *redis.Client, task Task) (result TaskStatus) {
 		return result
 	}
 
-	cancel()
 	sub.Close()
+	cancel()
 
 	var runRes RunResponse
 	json.NewDecoder(resp.Body).Decode(&runRes)
@@ -127,34 +102,6 @@ func extractErrorLine(out string) string {
 		}
 	}
 	return ""
-}
-
-func CreateTempDir() (string, error) {
-
-	name := "Playground-*"
-	dirname, err := os.MkdirTemp("", name)
-	if err != nil {
-		return "", err
-	}
-	return dirname, err
-
-}
-
-func writeCodeFile(dir string, task Task) (string, error) {
-
-	fileName := filepath.Join(dir, ("main.go"))
-
-	if len(task.Code) > MaxCodeSize {
-		return "", fmt.Errorf("code size limit exceeded")
-	}
-
-	err := os.WriteFile(fileName, []byte(task.Code), 0666)
-	if err != nil {
-		return "", err
-	}
-
-	return fileName, nil
-
 }
 
 func recoverPending(client *redis.Client, ctx context.Context, stream string,

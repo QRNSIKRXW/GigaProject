@@ -82,6 +82,7 @@ func GoRunHandler(client *redis.Client) http.HandlerFunc {
 		taskId := uuid.New().String()
 
 		req.Id = taskId
+		log.Println("RUN HANDLER: created taskId:", taskId)
 		req.OwnerId = ownerId
 		req.Lang = "golang"
 

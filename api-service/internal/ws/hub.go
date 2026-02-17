@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"log"
 	"net/http"
 	"sync"
 
@@ -41,6 +42,7 @@ func (h *Hub) StartHub() {
 		select {
 
 		case client := <-h.register:
+			log.Println("HUB: register client for taskId:", client.TaskId)
 			if _, ok := h.Clients[client.TaskId]; !ok {
 				h.Clients[client.TaskId] = make(map[*Client]bool)
 			}
@@ -55,10 +57,19 @@ func (h *Hub) StartHub() {
 			}
 
 		case msg := <-h.broadcast:
+			log.Println("HUB: broadcast for taskId:", msg.TaskId)
+
 			if clients, ok := h.Clients[msg.TaskId]; ok {
+				log.Println("HUB: found", len(clients), "clients")
 				for client := range clients {
-					client.Send <- []byte(msg.Line)
+					select {
+					case client.Send <- []byte(msg.Line):
+					default:
+						log.Println("HUB: client send buffer full, dropping")
+					}
 				}
+			} else {
+				log.Println("HUB: no clients for taskId:", msg.TaskId)
 			}
 
 		case <-h.done:

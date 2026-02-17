@@ -6,7 +6,7 @@ import (
 	"os/exec"
 )
 
-func CreateRequest(ctx context.Context, dir string, filename string, lang string) (cmd *exec.Cmd, err error) {
+func CreateRequest(ctx context.Context, dir string, filename string, lang string) (*exec.Cmd, error) {
 
 	if lang == "golang" {
 
@@ -17,15 +17,15 @@ func CreateRequest(ctx context.Context, dir string, filename string, lang string
 			"--memory", "128m",
 			"--cpus", "0.5",
 			"--pids-limit", "64",
-			"--read-only",
-			"--tmpfs", "/tmp:rw,size=16m",
 			"-v", dir + ":/code",
 			"gorunner",
-			"go", "run", "/code/" + filename,
+			"/code/app", // запускаем бинарник
 		}
 
 		return exec.CommandContext(ctx, "docker", args...), nil
-	} else if lang == "python" {
+	}
+
+	if lang == "python" {
 
 		args := []string{
 			"run",
@@ -34,16 +34,13 @@ func CreateRequest(ctx context.Context, dir string, filename string, lang string
 			"--memory", "128m",
 			"--cpus", "0.5",
 			"--pids-limit", "64",
-			"--read-only",
-			"--tmpfs", "/tmp:rw,size=16m",
 			"-v", dir + ":/code",
 			"pyrunner",
-			"python", "/code/" + filename,
+			"python3", "/code/main.py",
 		}
 
 		return exec.CommandContext(ctx, "docker", args...), nil
-
-	} else {
-		return nil, fmt.Errorf("unknown lang")
 	}
+
+	return nil, fmt.Errorf("unknown lang")
 }

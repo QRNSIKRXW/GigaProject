@@ -23,7 +23,14 @@ func ParseTask(msg redis.XMessage) (Task, error) {
 	if !ok {
 		return Task{}, fmt.Errorf("types missmatch")
 	}
-	return Task{Id: id, Code: code}, nil
+
+	lang, ok := msg.Values["lang"].(string)
+	if !ok {
+		// по-хорошему — ошибка, но можно и default
+		lang = "golang"
+	}
+
+	return Task{Id: id, Code: code, Lang: lang}, nil
 }
 
 type TaskStatus struct {
@@ -68,10 +75,9 @@ type PendingTask struct {
 const MaxCodeSize = 64 * 1024
 
 type RunRequest struct {
-	TaskId   string `json:"taskId"`
-	Dir      string `json:"dir"`
-	Lang     string `json:"lang"`
-	Filename string `json:"filename"`
+	TaskId string `json:"taskId"`
+	Lang   string `json:"lang"`
+	Code   string `json:"code"`
 }
 
 type RedisLine struct {

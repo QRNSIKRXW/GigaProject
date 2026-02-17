@@ -10,8 +10,13 @@ import (
 
 func StartRedis() *redis.Client {
 
+	addr := os.Getenv("REDIS_ADDR")
+	if addr == "" {
+		addr = "localhost:6379"
+	}
+
 	rdb := redis.NewClient(&redis.Options{
-		Addr: os.Getenv("REDIS_ADDR"),
+		Addr: addr,
 	})
 
 	return rdb

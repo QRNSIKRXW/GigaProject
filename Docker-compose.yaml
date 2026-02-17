@@ -40,22 +40,6 @@ services:
     networks:
       - appnet
 
-  runner-service:
-    build:
-      context: ./runner-service
-    container_name: runner-service
-    restart: always
-    environment:
-      - REDIS_ADDR=redis:6379
-    depends_on:
-      - redis
-    ports:
-      - "9000:9000"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    networks:
-      - appnet
-
   go-worker:
     build:
       context: ./go-worker
@@ -64,29 +48,11 @@ services:
     restart: always
     environment:
       - REDIS_ADDR=redis:6379
-      - RUNNER_URL=http://runner-service:9000
+      - RUNNER_URL=http://host.docker.internal:9000
     depends_on:
       - redis
-      - runner-service
     expose:
-      - "9102"   # внутренний порт для Prometheus
-    networks:
-      - appnet
-
-  python-worker:
-    build:
-      context: ./python-worker
-      dockerfile: ../docker/go-service/Dockerfile
-    container_name: python-worker
-    restart: always
-    environment:
-      - REDIS_ADDR=redis:6379
-      - RUNNER_URL=http://runner-service:9000
-    depends_on:
-      - redis
-      - runner-service
-    expose:
-      - "9101"   # внутренний порт для Prometheus
+      - "9102"
     networks:
       - appnet
 
