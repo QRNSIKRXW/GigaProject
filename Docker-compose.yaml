@@ -35,15 +35,13 @@ services:
       - REDIS_ADDR=redis:6379
     depends_on:
       - redis
-    ports:
-      - "8081:8080"
     networks:
       - appnet
 
   go-worker:
     build:
       context: ./go-worker
-      dockerfile: ../docker/go-service/Dockerfile
+      dockerfile: Dockerfile
     container_name: go-worker
     restart: always
     environment:
@@ -53,6 +51,22 @@ services:
       - redis
     expose:
       - "9102"
+    networks:
+      - appnet
+
+  py-worker:
+    build:
+      context: ./py-worker
+      dockerfile: Dockerfile
+    container_name: py-worker
+    restart: always
+    environment:
+      - REDIS_ADDR=redis:6379
+      - RUNNER_URL=http://host.docker.internal:9000
+    depends_on:
+      - redis
+    ports:
+      - "9001:9001"
     networks:
       - appnet
 

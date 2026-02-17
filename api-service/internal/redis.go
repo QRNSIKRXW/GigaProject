@@ -25,6 +25,7 @@ func PushTask(task Task, client *redis.Client, ctx context.Context, stream strin
 		Values: map[string]interface{}{
 			"id":   task.Id,
 			"code": task.Code,
+			"lang": task.Lang,
 		},
 	}).Result()
 
