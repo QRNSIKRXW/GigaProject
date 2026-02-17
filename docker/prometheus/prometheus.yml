@@ -20,4 +20,4 @@ scrape_configs:
 
   - job_name: 'python-worker'
     static_configs:
-      - targets: ['python-worker:9101']
+      - targets: ['py-worker:9101']

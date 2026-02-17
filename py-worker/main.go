@@ -34,8 +34,8 @@ func main() {
 	}
 
 	go func() {
-		log.Println("go-worker metrics on :9001")
-		if err := http.ListenAndServe(":9001", r); err != nil {
+		log.Println("go-worker metrics on :9101")
+		if err := http.ListenAndServe(":9101", r); err != nil {
 			log.Fatalf("metrics server failed: %v", err)
 		}
 	}()
