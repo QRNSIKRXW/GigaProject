@@ -8,12 +8,18 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
 
-func RunDocker(client *redis.Client, ctx context.Context, code string, id string, lang string) (string, string) {
+func RunDocker(client *redis.Client, parentCtx context.Context, code string, id string, lang string) (string, string) {
 
+	// ТАЙМАУТ ТОЛЬКО ДЛЯ КОНТЕЙНЕРА
+	execCtx, cancel := context.WithTimeout(parentCtx, 3*time.Second)
+	defer cancel()
+
+	// 1. Временная директория
 	dir, err := os.MkdirTemp("", "run-*")
 	if err != nil {
 		return "error", "internal error"
@@ -30,13 +36,10 @@ func RunDocker(client *redis.Client, ctx context.Context, code string, id string
 		return "error", "internal error"
 	}
 
-	// если Go — компилируем заранее (как мы обсуждали)
+	// 2. Компиляция Go
 	if lang == "golang" {
-		buildCmd := exec.CommandContext(ctx, "go", "build", "-o", filepath.Join(dir, "app"), path)
-		buildCmd.Env = append(os.Environ(),
-			"GOOS=linux",
-			"GOARCH=arm64", // или arm64
-		)
+		buildCmd := exec.Command("go", "build", "-o", filepath.Join(dir, "app"), path)
+		buildCmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH=amd64")
 
 		if out, err := buildCmd.CombinedOutput(); err != nil {
 			WritePubSub(client, context.Background(), string(out), id)
@@ -44,69 +47,87 @@ func RunDocker(client *redis.Client, ctx context.Context, code string, id string
 		}
 	}
 
-	cmd, err := CreateRequest(ctx, dir, filename, lang)
+	// 3. Команда docker run
+	args, containerName, err := CreateRequest(dir, filename, lang, id)
 	if err != nil {
 		return "error", err.Error()
 	}
 
-	stdoutPipe, _ := cmd.StdoutPipe()
-	stderrPipe, _ := cmd.StderrPipe()
+	// 4. Запуск контейнера в фоне
+	runCmd := exec.Command("docker", args...)
+	if out, err := runCmd.CombinedOutput(); err != nil {
+		return "error", fmt.Sprintf("docker run failed: %v (%s)", err, string(out))
+	}
 
-	if err := cmd.Start(); err != nil {
-		return "error", "docker start failed"
+	// 5. attach вместо logs -f
+	logsCtx, logsCancel := context.WithCancel(context.Background())
+	defer logsCancel()
+
+	logsCmd := exec.CommandContext(logsCtx, "docker", "attach", "--no-stdin", containerName)
+
+	stdoutPipe, err := logsCmd.StdoutPipe()
+	if err != nil {
+		return "error", "failed to get stdout"
+	}
+	stderrPipe, err := logsCmd.StderrPipe()
+	if err != nil {
+		return "error", "failed to get stderr"
+	}
+
+	if err := logsCmd.Start(); err != nil {
+		return "error", "docker attach failed"
 	}
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 
+	// stdout
 	go func() {
 		defer wg.Done()
 		scanner := bufio.NewScanner(stdoutPipe)
 		for scanner.Scan() {
-			line := scanner.Text()
-			fmt.Println("STDOUT:", line)
-			if err := WritePubSub(client, context.Background(), line, id); err != nil {
-				fmt.Println("PUBSUB ERROR (stdout):", err)
-			}
-		}
-		if err := scanner.Err(); err != nil {
-			fmt.Println("STDOUT SCAN ERROR:", err)
+			WritePubSub(client, context.Background(), scanner.Text(), id)
 		}
 	}()
 
+	// stderr
 	go func() {
 		defer wg.Done()
 		scanner := bufio.NewScanner(stderrPipe)
 		for scanner.Scan() {
-			line := scanner.Text()
-			fmt.Println("STDERR:", line)
-			if err := WritePubSub(client, context.Background(), line, id); err != nil {
-				fmt.Println("PUBSUB ERROR (stderr):", err)
-			}
-		}
-		if err := scanner.Err(); err != nil {
-			fmt.Println("STDERR SCAN ERROR:", err)
+			WritePubSub(client, context.Background(), scanner.Text(), id)
 		}
 	}()
 
-	err = cmd.Wait()
-	wg.Wait() // дожидаемся, пока всё дочитается и допишется в Redis
+	// 6. Ждём завершения контейнера
+	waitCmd := exec.Command("docker", "wait", containerName)
+	waitDone := make(chan error, 1)
 
-	if ctx.Err() == context.DeadlineExceeded {
+	go func() {
+		waitDone <- waitCmd.Run()
+	}()
+
+	select {
+	case <-execCtx.Done():
+		// ТАЙМАУТ — убиваем контейнер
+		exec.Command("docker", "kill", containerName).Run()
+		exec.Command("docker", "rm", "-f", containerName).Run()
+
+		logsCancel()
+		wg.Wait()
+
 		return "error", "timeout"
-	}
 
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			switch exitErr.ExitCode() {
-			case 125, 126, 127:
-				return "error", "docker crashed"
-			default:
-				return "done", ""
-			}
+	case err := <-waitDone:
+		// Контейнер завершился сам
+		logsCancel()
+		wg.Wait()
+
+		exec.Command("docker", "rm", "-f", containerName).Run()
+
+		if err != nil {
+			return "done", ""
 		}
-		return "error", "docker failed"
+		return "done", ""
 	}
-
-	return "done", ""
 }

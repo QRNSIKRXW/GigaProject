@@ -2,7 +2,6 @@ FROM golang:1.22-alpine
 
 WORKDIR /code
 
-# Добавляем shell и инструменты
-RUN apk add --no-cache bash build-base
+RUN apk add --no-cache build-base
 
-# Контейнер будет запускать команду, которую передаст воркер
+ENTRYPOINT ["/code/app"]

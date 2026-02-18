@@ -1,46 +1,51 @@
 package internal
 
 import (
-	"context"
 	"fmt"
-	"os/exec"
 )
 
-func CreateRequest(ctx context.Context, dir string, filename string, lang string) (*exec.Cmd, error) {
+func CreateRequest(dir, filename, lang, id string) ([]string, string, error) {
+	containerName := "task-" + id
 
-	if lang == "golang" {
+	common := []string{
+		"run",
+		"-d",
+		"--name", containerName,
 
-		args := []string{
-			"run",
-			"--rm",
-			"--network", "none",
-			"--memory", "128m",
-			"--cpus", "0.5",
-			"--pids-limit", "64",
-			"-v", dir + ":/code",
-			"gorunner",
-			"/code/app", // запускаем бинарник
-		}
+		// сеть полностью отрублена
+		"--network", "none",
 
-		return exec.CommandContext(ctx, "docker", args...), nil
+		// ресурсы
+		"--memory", "128m",
+		"--cpus", "0.5",
+		"--pids-limit", "64",
+
+		// файловая система
+		"--read-only",                            // rootfs только для чтения
+		"--tmpfs", "/tmp:rw,noexec,nosuid,nodev", // отдельный tmpfs для /tmp
+
+		// безопасность
+		"--security-opt", "no-new-privileges",
+		"--cap-drop", "ALL",
+
+		// ulimit'ы
+		"--ulimit", "nofile=64:64",
+		"--ulimit", "nproc=64:64",
+
+		// код монтируем как rw
+		"-v", dir + ":/code:rw",
 	}
 
-	if lang == "python" {
+	switch lang {
+	case "golang":
+		args := append(common, "gorunner")
+		return args, containerName, nil
 
-		args := []string{
-			"run",
-			"--rm",
-			"--network", "none",
-			"--memory", "128m",
-			"--cpus", "0.5",
-			"--pids-limit", "64",
-			"-v", dir + ":/code",
-			"pyrunner",
-			"python3", "/code/main.py",
-		}
+	case "python":
+		args := append(common, "pyrunner")
+		return args, containerName, nil
 
-		return exec.CommandContext(ctx, "docker", args...), nil
+	default:
+		return nil, "", fmt.Errorf("unknown lang")
 	}
-
-	return nil, fmt.Errorf("unknown lang")
 }
