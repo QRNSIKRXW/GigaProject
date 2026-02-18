@@ -14,7 +14,6 @@ import (
 )
 
 func main() {
-
 	client := internal.StartRedis()
 	defer client.Close()
 
@@ -23,7 +22,6 @@ func main() {
 	r := mux.NewRouter()
 
 	r.Handle("/metrics", promhttp.Handler())
-
 	r.HandleFunc("/", internal.RunHandler(client, runner))
 
 	srv := &http.Server{
@@ -34,7 +32,6 @@ func main() {
 	go srv.ListenAndServe()
 
 	sig := make(chan os.Signal, 1)
-
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	done := make(chan bool)
 
@@ -49,5 +46,4 @@ func main() {
 	defer cancel()
 
 	srv.Shutdown(ctx)
-
 }

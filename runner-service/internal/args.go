@@ -21,8 +21,8 @@ func CreateRequest(dir, filename, lang, id string) ([]string, string, error) {
 		"--pids-limit", "64",
 
 		// файловая система
-		"--read-only",                            // rootfs только для чтения
-		"--tmpfs", "/tmp:rw,noexec,nosuid,nodev", // отдельный tmpfs для /tmp
+		"--read-only",
+		"--tmpfs", "/tmp:rw,noexec,nosuid,nodev",
 
 		// безопасность
 		"--security-opt", "no-new-privileges",
@@ -40,11 +40,9 @@ func CreateRequest(dir, filename, lang, id string) ([]string, string, error) {
 	case "golang":
 		args := append(common, "gorunner")
 		return args, containerName, nil
-
 	case "python":
 		args := append(common, "pyrunner")
 		return args, containerName, nil
-
 	default:
 		return nil, "", fmt.Errorf("unknown lang")
 	}

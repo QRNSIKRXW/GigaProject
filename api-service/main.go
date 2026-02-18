@@ -21,11 +21,8 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	hub := ws.CreateHub()
-
+	hub := ws.CreateHub(client)
 	go hub.StartHub()
-
-	go ws.StartPubSubListener(ctx, client, hub)
 
 	r := mux.NewRouter()
 
@@ -33,7 +30,7 @@ func main() {
 
 	// r.HandleFunc("/", Home) - хендлер для главной страницы выбора песочницы
 
-	r.HandleFunc("/ws", ws.ConnectionHandler(hub, client))
+	r.HandleFunc("/ws", ws.ConnectionHandler(hub))
 
 	r.HandleFunc("/api/history", internal.HistoryHandler(client)).Methods("GET")
 	r.HandleFunc("/api/run/go", internal.GoRunHandler(client)).Methods("POST")

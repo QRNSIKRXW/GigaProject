@@ -10,7 +10,6 @@ import (
 
 func RunHandler(client *redis.Client, runner DockerRunner) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-
 		ctx := r.Context()
 
 		if r.Method != http.MethodPost {

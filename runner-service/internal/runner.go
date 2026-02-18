@@ -14,8 +14,6 @@ import (
 )
 
 func RunDocker(client *redis.Client, parentCtx context.Context, code string, id string, lang string) (string, string) {
-
-	// ТАЙМАУТ ТОЛЬКО ДЛЯ КОНТЕЙНЕРА
 	execCtx, cancel := context.WithTimeout(parentCtx, 3*time.Second)
 	defer cancel()
 
@@ -42,64 +40,61 @@ func RunDocker(client *redis.Client, parentCtx context.Context, code string, id 
 		buildCmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH=amd64")
 
 		if out, err := buildCmd.CombinedOutput(); err != nil {
-			WritePubSub(client, context.Background(), string(out), id)
+			_ = WritePubSub(client, string(out), id)
 			return "error", "build failed"
 		}
 	}
 
-	// 3. Команда docker run
+	// 3. docker run
 	args, containerName, err := CreateRequest(dir, filename, lang, id)
 	if err != nil {
 		return "error", err.Error()
 	}
 
-	// 4. Запуск контейнера в фоне
 	runCmd := exec.Command("docker", args...)
 	if out, err := runCmd.CombinedOutput(); err != nil {
 		return "error", fmt.Sprintf("docker run failed: %v (%s)", err, string(out))
 	}
 
-	// 5. attach вместо logs -f
-	logsCtx, logsCancel := context.WithCancel(context.Background())
-	defer logsCancel()
-
-	logsCmd := exec.CommandContext(logsCtx, "docker", "attach", "--no-stdin", containerName)
+	// 4. docker logs -f (stdout + stderr)
+	logsCmd := exec.Command("docker", "logs", "-f", containerName)
 
 	stdoutPipe, err := logsCmd.StdoutPipe()
 	if err != nil {
 		return "error", "failed to get stdout"
 	}
+
 	stderrPipe, err := logsCmd.StderrPipe()
 	if err != nil {
 		return "error", "failed to get stderr"
 	}
 
 	if err := logsCmd.Start(); err != nil {
-		return "error", "docker attach failed"
+		return "error", "docker logs failed"
 	}
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	// stdout
+	// Чтение stdout
 	go func() {
 		defer wg.Done()
 		scanner := bufio.NewScanner(stdoutPipe)
 		for scanner.Scan() {
-			WritePubSub(client, context.Background(), scanner.Text(), id)
+			_ = WritePubSub(client, scanner.Text(), id)
 		}
 	}()
 
-	// stderr
+	// Чтение stderr (Python ошибки будут здесь)
 	go func() {
 		defer wg.Done()
 		scanner := bufio.NewScanner(stderrPipe)
 		for scanner.Scan() {
-			WritePubSub(client, context.Background(), scanner.Text(), id)
+			_ = WritePubSub(client, scanner.Text(), id)
 		}
 	}()
 
-	// 6. Ждём завершения контейнера
+	// 5. Ждём завершения контейнера
 	waitCmd := exec.Command("docker", "wait", containerName)
 	waitDone := make(chan error, 1)
 
@@ -109,25 +104,19 @@ func RunDocker(client *redis.Client, parentCtx context.Context, code string, id 
 
 	select {
 	case <-execCtx.Done():
-		// ТАЙМАУТ — убиваем контейнер
 		exec.Command("docker", "kill", containerName).Run()
 		exec.Command("docker", "rm", "-f", containerName).Run()
-
-		logsCancel()
-		wg.Wait()
-
 		return "error", "timeout"
 
-	case err := <-waitDone:
-		// Контейнер завершился сам
-		logsCancel()
-		wg.Wait()
-
-		exec.Command("docker", "rm", "-f", containerName).Run()
-
-		if err != nil {
-			return "done", ""
-		}
-		return "done", ""
+	case <-waitDone:
+		// контейнер завершился
 	}
+
+	// 6. Останавливаем logs -f
+	logsCmd.Process.Kill()
+	wg.Wait()
+
+	exec.Command("docker", "rm", "-f", containerName).Run()
+
+	return "done", ""
 }

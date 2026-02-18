@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -16,7 +17,7 @@ func ExecuteTask(client *redis.Client, task Task) (result TaskStatus) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	sub := client.Subscribe(ctx, "channel:broadcast")
+	sub := client.Subscribe(ctx, "task:"+task.Id)
 	ch := sub.Channel()
 
 	buffer := NewLimitedBuffer(1_000_000)
@@ -53,6 +54,7 @@ func ExecuteTask(client *redis.Client, task Task) (result TaskStatus) {
 		result.Result = ""
 		return result
 	}
+	log.Println("Post succsseful")
 
 	sub.Close()
 	cancel()

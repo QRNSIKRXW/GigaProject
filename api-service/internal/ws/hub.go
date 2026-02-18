@@ -1,11 +1,13 @@
 package ws
 
 import (
+	"encoding/json"
 	"log"
 	"net/http"
 	"sync"
 
 	"github.com/gorilla/websocket"
+	"github.com/redis/go-redis/v9"
 )
 
 type BroadcastMessage struct {
@@ -20,18 +22,26 @@ type Hub struct {
 	broadcast  chan BroadcastMessage
 	done       chan bool
 	wg         sync.WaitGroup
+	Rdb        *redis.Client
 }
 
 var Upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
 	CheckOrigin: func(r *http.Request) bool {
-		// тут можно сделать тоньше: проверять конкретный домен
-		// origin := r.Header.Get("Origin")
-		// пример: разрешаем только твой фронтенд
-		// return origin == "https://your-frontend-domain"
-		return true // временно, чтобы не ломать, но лучше ужесточить
+		return true
 	},
+}
+
+func CreateHub(rdb *redis.Client) *Hub {
+	return &Hub{
+		Clients:    make(map[string]map[*Client]bool),
+		register:   make(chan *Client),
+		unregister: make(chan *Client),
+		broadcast:  make(chan BroadcastMessage),
+		done:       make(chan bool),
+		Rdb:        rdb,
+	}
 }
 
 func (h *Hub) StartHub() {
@@ -40,9 +50,10 @@ func (h *Hub) StartHub() {
 
 	for {
 		select {
-
 		case client := <-h.register:
-			log.Println("HUB: register client for taskId:", client.TaskId)
+			if client.TaskId == "" {
+				continue
+			}
 			if _, ok := h.Clients[client.TaskId]; !ok {
 				h.Clients[client.TaskId] = make(map[*Client]bool)
 			}
@@ -57,19 +68,16 @@ func (h *Hub) StartHub() {
 			}
 
 		case msg := <-h.broadcast:
-			log.Println("HUB: broadcast for taskId:", msg.TaskId)
+			log.Println("HUB BROADCAST:", msg.TaskId, msg.Line)
 
+			payload, _ := json.Marshal(msg)
 			if clients, ok := h.Clients[msg.TaskId]; ok {
-				log.Println("HUB: found", len(clients), "clients")
 				for client := range clients {
 					select {
-					case client.Send <- []byte(msg.Line):
+					case client.Send <- payload:
 					default:
-						log.Println("HUB: client send buffer full, dropping")
 					}
 				}
-			} else {
-				log.Println("HUB: no clients for taskId:", msg.TaskId)
 			}
 
 		case <-h.done:
@@ -78,30 +86,7 @@ func (h *Hub) StartHub() {
 	}
 }
 
-func CreateHub() *Hub {
-	return &Hub{
-		Clients:    make(map[string]map[*Client]bool),
-		register:   make(chan *Client),
-		unregister: make(chan *Client),
-		broadcast:  make(chan BroadcastMessage),
-		done:       make(chan bool),
-		wg:         sync.WaitGroup{},
-	}
-}
-
 func (h *Hub) Shutdown() {
-
 	close(h.done)
-
 	h.wg.Wait()
-
-	for _, clientMap := range h.Clients {
-		for client := range clientMap {
-			client.WebSocket.Close()
-			close(client.Send)
-		}
-	}
-
-	h.Clients = map[string]map[*Client]bool{}
-
 }

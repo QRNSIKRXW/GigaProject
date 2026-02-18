@@ -3,6 +3,7 @@ package internal
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 
@@ -43,10 +44,14 @@ func GetTask(client *redis.Client, ctx context.Context, consumerID string, group
 
 	id := msg.ID
 
+	log.Printf("[GetTask] raw message: %#v\n", msg)
+
 	task, err = ParseTask(msg)
 	if err != nil {
 		return WrongTask, "_", err
 	}
+
+	log.Printf("[GetTask] parsed task: %+v\n", task)
 
 	return task, id, nil
 
@@ -82,18 +87,6 @@ func WriteResult(client *redis.Client, ctx context.Context, result TaskStatus, i
 		"result": result.Result,
 		"error":  result.Error,
 	}).Err()
-	if err != nil {
-		return err
-	}
-
-	return nil
-
-}
-
-func WritePubSub(client *redis.Client, ctx context.Context, middleResult string, id string) error {
-
-	payload := fmt.Sprintf(`{"taskId":"%s","line":"%s"}`, id, middleResult)
-	err := client.Publish(ctx, "channel:broadcast", payload).Err()
 	if err != nil {
 		return err
 	}

@@ -122,80 +122,86 @@ const App: React.FC = () => {
   }
 
   const runCode = async () => {
-    if (!code.trim()) return
+  if (!code.trim()) return
 
-    setIsRunning(true)
-    setOutput([])
-    setActiveHistoryId(null)
+  setIsRunning(true)
+  setOutput([])
+  setActiveHistoryId(null)
 
-    try {
-      const runUrl =
-        lang === "golang"
-          ? `${API_BASE}/run/go`
-          : `${API_BASE}/run/python`
+  try {
+    const runUrl =
+      lang === "golang"
+        ? `${API_BASE}/run/go`
+        : `${API_BASE}/run/python`
 
-      const resp = await fetch(runUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ code })
-      })
+    const resp = await fetch(runUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ code })
+    })
 
-      if (!resp.ok) {
-        const text = await resp.text().catch(() => "")
-        setOutput((prev) => [
-          ...prev,
-          `[api error] ${resp.status} ${text || ""}`.trim()
-        ])
-        setIsRunning(false)
-        return
-      }
-
-      const data = await resp.json()
-      const newTaskId: string = data.id
-
-      if (!newTaskId) {
-        setOutput((prev) => [...prev, "[api error] no taskId"])
-        setIsRunning(false)
-        return
-      }
-
-      setTaskId(newTaskId)
-
-      // Запускаем WebSocket для live-вывода
-      const ws = new WebSocket(WS_URL)
-
-      ws.onopen = () => {
-        ws.send(JSON.stringify({ taskId: newTaskId }))
-      }
-
-      ws.onmessage = (event: MessageEvent) => {
-        setOutput((prev) => [...prev, String(event.data)])
-      }
-
-      ws.onerror = () => {
-        setOutput((prev) => [...prev, "[websocket error]"])
-      }
-
-      ws.onclose = () => {
-        // WebSocket закрылся — но статус мы всё равно добиваем через HTTP
-      }
-
-      // Запускаем поллинг статуса
-      pollStatus(newTaskId)
-
-      addToHistory({
-        id: newTaskId,
-        lang,
-        code,
-        createdAt: Date.now()
-      })
-    } catch (err) {
-      console.error(err)
-      setOutput((prev) => [...prev, "[request error]"])
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "")
+      setOutput(prev => [
+        ...prev,
+        `[api error] ${resp.status} ${text || ""}`.trim()
+      ])
       setIsRunning(false)
+      return
     }
+
+    const data = await resp.json()
+    const newTaskId: string = data.id
+
+    if (!newTaskId) {
+      setOutput(prev => [...prev, "[api error] no taskId"])
+      setIsRunning(false)
+      return
+    }
+
+    setTaskId(newTaskId)
+
+    // === WebSocket ===
+    const ws = new WebSocket(WS_URL)
+
+    ws.onopen = () => {
+      ws.send(JSON.stringify({
+        type: "subscribe",
+        taskId: newTaskId
+      }))
+    }
+
+    ws.onmessage = (event: MessageEvent) => {
+      try {
+        const msg = JSON.parse(event.data)
+        setOutput(prev => [...prev, msg.line])
+      } catch {
+        // если пришла просто строка
+        setOutput(prev => [...prev, String(event.data)])
+      }
+    }
+
+    ws.onerror = () => {
+      setOutput(prev => [...prev, "[websocket error]"])
+    }
+
+    // === Статус ===
+    pollStatus(newTaskId)
+
+    addToHistory({
+      id: newTaskId,
+      lang,
+      code,
+      createdAt: Date.now()
+    })
+  } catch (err) {
+    console.error(err)
+    setOutput(prev => [...prev, "[request error]"])
+    setIsRunning(false)
   }
+}
+
 
   const loadFromHistory = (item: HistoryItem) => {
     setLang(item.lang)

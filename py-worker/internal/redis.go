@@ -89,15 +89,3 @@ func WriteResult(client *redis.Client, ctx context.Context, result TaskStatus, i
 	return nil
 
 }
-
-func WritePubSub(client *redis.Client, ctx context.Context, middleResult string, id string) error {
-
-	payload := fmt.Sprintf(`{"taskId":"%s","line":"%s"}`, id, middleResult)
-	err := client.Publish(ctx, "channel:broadcast", payload).Err()
-	if err != nil {
-		return err
-	}
-
-	return nil
-
-}
