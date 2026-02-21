@@ -70,6 +70,23 @@ services:
     networks:
       - appnet
 
+  # -------------------------
+  # FRONTEND (React/Vite)
+  # -------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: frontend-builder
+    command: ["sh", "-c", "npm run build"]
+    volumes:
+      - frontend_dist:/app/dist
+    networks:
+      - appnet
+
+  # -------------------------
+  # NGINX (отдаёт фронт + проксирует API и WS)
+  # -------------------------
   nginx:
     build:
       context: .
@@ -78,11 +95,17 @@ services:
     restart: always
     depends_on:
       - api-service
+      - frontend
     ports:
       - "80:80"
+    volumes:
+      - frontend_dist:/usr/share/nginx/html
     networks:
       - appnet
 
+  # -------------------------
+  # PROMETHEUS
+  # -------------------------
   prometheus:
     image: prom/prometheus
     container_name: prometheus
@@ -93,6 +116,29 @@ services:
       - "9090:9090"
     networks:
       - appnet
+
+  # -------------------------
+  # GRAFANA (с сохранением пароля)
+  # -------------------------
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    restart: always
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    depends_on:
+      - prometheus
+    volumes:
+      - grafana_data:/var/lib/grafana
+    networks:
+      - appnet
+
+volumes:
+  frontend_dist:
+  grafana_data:
 
 networks:
   appnet:
