@@ -83,6 +83,10 @@ func RunDocker(client *redis.Client, parentCtx context.Context, code string, id 
 		for scanner.Scan() {
 			_ = WritePubSub(client, scanner.Text(), id)
 		}
+		if err := scanner.Err(); err != nil {
+			// log but continue; we don't want to stop execution
+			fmt.Println("stdout scanner error:", err)
+		}
 	}()
 
 	// Чтение stderr (Python ошибки будут здесь)
@@ -91,6 +95,9 @@ func RunDocker(client *redis.Client, parentCtx context.Context, code string, id 
 		scanner := bufio.NewScanner(stderrPipe)
 		for scanner.Scan() {
 			_ = WritePubSub(client, scanner.Text(), id)
+		}
+		if err := scanner.Err(); err != nil {
+			fmt.Println("stderr scanner error:", err)
 		}
 	}()
 

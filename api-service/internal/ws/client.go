@@ -16,7 +16,11 @@ type Client struct {
 }
 
 func (c *Client) readPump() {
+	// create a cancellable context for the pubsub listener; when the pump exits we
+	// cancel it so the goroutine can clean up as well.
+	ctx, cancel := context.WithCancel(context.Background())
 	defer func() {
+		cancel()
 		c.Hub.unregister <- c
 		c.WebSocket.Close()
 	}()
@@ -41,7 +45,7 @@ func (c *Client) readPump() {
 			c.Hub.register <- c
 
 			go StartPubSubListener(
-				context.Background(),
+				ctx,
 				c.Hub.Rdb,
 				c.Hub,
 				"task:"+req.TaskId,

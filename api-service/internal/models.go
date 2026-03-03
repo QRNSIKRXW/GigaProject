@@ -29,3 +29,5 @@ type RunResponse struct {
 type ErrorResponse struct {
 	Error string `json:"error"`
 }
+
+const MaxCodeSize = 64 * 1024 // 64 KB limit for code submission

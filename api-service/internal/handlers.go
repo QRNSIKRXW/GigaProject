@@ -62,6 +62,16 @@ func GoRunHandler(client *redis.Client) http.HandlerFunc {
 
 		}
 
+		if len(req.Code) > MaxCodeSize {
+			log.Println("Code too large:", len(req.Code))
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			json.NewEncoder(w).Encode(ErrorResponse{
+				Error: "code too large",
+			})
+			return
+		}
+
 		var ownerId string
 		coockie, err := r.Cookie("owner")
 		if err != nil {
@@ -174,6 +184,16 @@ func PyRunHandler(client *redis.Client) http.HandlerFunc {
 
 			return
 
+		}
+
+		if len(req.Code) > MaxCodeSize {
+			log.Println("Code too large:", len(req.Code))
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			json.NewEncoder(w).Encode(ErrorResponse{
+				Error: "code too large",
+			})
+			return
 		}
 
 		var ownerId string

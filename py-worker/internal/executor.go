@@ -26,7 +26,9 @@ func ExecuteTask(client *redis.Client, task Task) (result TaskStatus) {
 		for msg := range ch {
 
 			var line RedisLine
-			json.Unmarshal([]byte(msg.Payload), &line)
+			if err := json.Unmarshal([]byte(msg.Payload), &line); err != nil {
+				continue
+			}
 
 			if line.TaskId != task.Id {
 				continue
@@ -53,6 +55,7 @@ func ExecuteTask(client *redis.Client, task Task) (result TaskStatus) {
 		result.Result = ""
 		return result
 	}
+	defer resp.Body.Close()
 
 	sub.Close()
 	cancel()

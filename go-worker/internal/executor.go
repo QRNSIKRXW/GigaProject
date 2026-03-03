@@ -27,7 +27,10 @@ func ExecuteTask(client *redis.Client, task Task) (result TaskStatus) {
 		for msg := range ch {
 
 			var line RedisLine
-			json.Unmarshal([]byte(msg.Payload), &line)
+			if err := json.Unmarshal([]byte(msg.Payload), &line); err != nil {
+				// ignore malformed messages
+				continue
+			}
 
 			if line.TaskId != task.Id {
 				continue
@@ -54,8 +57,11 @@ func ExecuteTask(client *redis.Client, task Task) (result TaskStatus) {
 		result.Result = ""
 		return result
 	}
+	// ensure we always close the response body to avoid leaking connections
+	defer resp.Body.Close()
 	log.Println("Post succsseful")
 
+	// we don't need the subscription any more once we pushed the job
 	sub.Close()
 	cancel()
 
