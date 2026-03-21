@@ -1,7 +1,5 @@
-FROM golang:1.22-alpine
+FROM golang:1.25.5-alpine
 
-WORKDIR /code
+WORKDIR /sandbox
 
-RUN apk add --no-cache build-base
-
-ENTRYPOINT ["/code/app"]
+CMD ["sleep", "infinity"]

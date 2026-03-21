@@ -10,6 +10,66 @@ services:
     networks:
       - appnet
 
+  # -------------------------
+  # RUNNER SERVICE
+  # -------------------------
+  runner-service:
+    build:
+      context: ./runner-service
+      dockerfile: Dockerfile
+    container_name: runner-service
+    restart: always
+    environment:
+      - REDIS_ADDR=redis:6379
+      - TMP_DIR=/tmp/runner-tmp
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /tmp/runner-tmp:/tmp/runner-tmp
+    networks:
+      - appnet
+    ports:
+      - "9000:9000"
+    depends_on:
+      - gorunner
+      - pyrunner
+
+  # -------------------------
+  # GORUNNER POOL
+  # -------------------------
+  gorunner:
+    build:
+      context: ./docker/go-runner
+      dockerfile: Dockerfile
+    container_name: gorunner
+    command: ["sleep", "infinity"]
+    restart: always
+    tmpfs:
+      - /sandbox/tmp
+    volumes:
+      - /tmp/runner-tmp:/sandbox:rw
+    networks:
+      - appnet
+
+  # -------------------------
+  # PYRUNNER POOL
+  # -------------------------
+  pyrunner:
+    build:
+      context: ./docker/python-runner
+      dockerfile: Dockerfile
+    container_name: pyrunner
+    command: ["sleep", "infinity"]
+    restart: always
+    tmpfs:
+      - /sandbox/tmp
+    volumes:
+      - /tmp/runner-tmp:/sandbox:rw
+    networks:
+      - appnet
+
+  # -------------------------
+  # API SERVICE
+  # -------------------------
   api-service:
     build:
       context: ./api-service
@@ -46,11 +106,10 @@ services:
     restart: always
     environment:
       - REDIS_ADDR=redis:6379
-      - RUNNER_URL=http://host.docker.internal:9000
+      - RUNNER_URL=http://runner-service:9000
     depends_on:
       - redis
-    expose:
-      - "9102"
+      - runner-service
     networks:
       - appnet
 
@@ -62,16 +121,15 @@ services:
     restart: always
     environment:
       - REDIS_ADDR=redis:6379
-      - RUNNER_URL=http://host.docker.internal:9000
+      - RUNNER_URL=http://runner-service:9000
     depends_on:
       - redis
-    ports:
-      - "9101:9101"
+      - runner-service
     networks:
       - appnet
 
   # -------------------------
-  # FRONTEND (React/Vite)
+  # FRONTEND
   # -------------------------
   frontend:
     build:
@@ -85,7 +143,7 @@ services:
       - appnet
 
   # -------------------------
-  # NGINX (отдаёт фронт + проксирует API и WS)
+  # NGINX
   # -------------------------
   nginx:
     build:
@@ -118,7 +176,7 @@ services:
       - appnet
 
   # -------------------------
-  # GRAFANA (с сохранением пароля)
+  # GRAFANA
   # -------------------------
   grafana:
     image: grafana/grafana:latest

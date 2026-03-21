@@ -29,9 +29,3 @@ type RunResponse struct {
 type DockerRunner interface {
 	RunDocker(*redis.Client, context.Context, string, string, string) (string, string)
 }
-
-type Runner struct{}
-
-func (r *Runner) RunDocker(client *redis.Client, ctx context.Context, code string, id string, lang string) (string, string) {
-	return RunDocker(client, ctx, code, id, lang)
-}

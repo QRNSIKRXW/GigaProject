@@ -48,7 +48,7 @@ func ExecuteTask(client *redis.Client, task Task) (result TaskStatus) {
 
 	body, _ := json.Marshal(req)
 
-	resp, err := http.Post("http://host.docker.internal:9000/", "application/json", bytes.NewBuffer(body))
+	resp, err := http.Post("http://runner-service:9000/", "application/json", bytes.NewBuffer(body))
 	if err != nil {
 		result.Status = "error"
 		result.Error = "internal error"

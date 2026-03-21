@@ -17,7 +17,7 @@ func ConnectionHandler(hub *Hub) http.HandlerFunc {
 		client := &Client{
 			Hub:       hub,
 			WebSocket: ws,
-			Send:      make(chan []byte, 16),
+			Send:      make(chan []byte, 32),
 		}
 
 		go client.writePump()
