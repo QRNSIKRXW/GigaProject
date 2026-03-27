@@ -75,20 +75,21 @@ func startContainer(name, image string) error {
 	run := exec.Command(
 		"docker", "run", "-d",
 		"--name", name,
-		"-v", "/tmp/runner-tmp:/sandbox:rw",
 
 		"--network", "none",
 		"--read-only",
-		"--tmpfs", "/sandbox/tmp",
+		"--tmpfs", "/sandbox:rw, size=128m",
 
 		"--user", "1000:1000",
 
 		"--cap-drop=ALL",
 		"--security-opt=no-new-privileges",
-		"--security-opt", "seccomp=/etc/docker/seccomp.json",
+		"--security-opt=seccomp=default",
 
 		"--memory", "256m",
-		"--cpus", "1",
+		"--cpus", "0.5",
+		"--cpu-period", "100000",
+		"--cpu-quota", "50000",
 		"--pids-limit", "128",
 
 		"--ulimit", "nofile=64:64",
@@ -168,7 +169,7 @@ rm -f $FILE $BIN
 			fmt.Sprintf(`
 FILE=%s/%s.py
 echo %s | base64 -d > $FILE
-python3 $FILE
+python3 -I -B $FILE
 rm -f $FILE
 `,
 				tmpDir, id,
