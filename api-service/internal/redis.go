@@ -25,6 +25,7 @@ func PushTask(task Task, client *redis.Client, ctx context.Context, stream strin
 		Values: map[string]interface{}{
 			"id":   task.Id,
 			"code": task.Code,
+			"lang": task.Lang,
 		},
 	}).Result()
 
@@ -39,7 +40,7 @@ func PushTask(task Task, client *redis.Client, ctx context.Context, stream strin
 		"code":   task.Code,
 		"result": "_",
 		"error":  "_",
-		"owner":  task.Id,
+		"owner":  task.OwnerId,
 		"lang":   task.Lang,
 	}).Err()
 

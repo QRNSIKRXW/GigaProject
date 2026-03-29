@@ -1,83 +1,203 @@
+version: "3.9"
+
 services:
-
-  nginx:
-    build:
-      context: ./docker/nginx
+  redis:
+    image: redis:7
+    container_name: redis
+    restart: always
     ports:
-      - "80:80"
-    depends_on:
-      - api-service
+      - "6379:6379"
+    networks:
+      - appnet
 
+  # -------------------------
+  # RUNNER SERVICE
+  # -------------------------
+  runner-service:
+    build:
+      context: ./runner-service
+      dockerfile: Dockerfile
+    container_name: runner-service
+    restart: always
+    environment:
+      - REDIS_ADDR=redis:6379
+      - TMP_DIR=/tmp/runner-tmp
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /tmp/runner-tmp:/tmp/runner-tmp
+    networks:
+      - appnet
+    ports:
+      - "9000:9000"
+    depends_on:
+      - gorunner
+      - pyrunner
+
+  # -------------------------
+  # GORUNNER POOL
+  # -------------------------
+  gorunner:
+    build:
+      context: ./docker/go-runner
+      dockerfile: Dockerfile
+    container_name: gorunner
+    command: ["sleep", "infinity"]
+    restart: always
+    tmpfs:
+      - /sandbox/tmp
+    volumes:
+      - /tmp/runner-tmp:/sandbox:rw
+    networks:
+      - appnet
+
+  # -------------------------
+  # PYRUNNER POOL
+  # -------------------------
+  pyrunner:
+    build:
+      context: ./docker/python-runner
+      dockerfile: Dockerfile
+    container_name: pyrunner
+    command: ["sleep", "infinity"]
+    restart: always
+    tmpfs:
+      - /sandbox/tmp
+    volumes:
+      - /tmp/runner-tmp:/sandbox:rw
+    networks:
+      - appnet
+
+  # -------------------------
+  # API SERVICE
+  # -------------------------
   api-service:
     build:
       context: ./api-service
       dockerfile: ../docker/go-service/Dockerfile
     container_name: api-service
-    ports:
-      - "8080:8080"
-    depends_on:
-      - redis
+    restart: always
     environment:
       - REDIS_ADDR=redis:6379
+    depends_on:
+      - redis
+    ports:
+      - "8000:8080"
+    networks:
+      - appnet
 
   api-worker:
     build:
       context: ./api-worker
       dockerfile: ../docker/go-service/Dockerfile
     container_name: api-worker
-    depends_on:
-      - redis
+    restart: always
     environment:
       - REDIS_ADDR=redis:6379
+    depends_on:
+      - redis
+    networks:
+      - appnet
 
   go-worker:
     build:
       context: ./go-worker
-      dockerfile: ../docker/go-service/Dockerfile
+      dockerfile: Dockerfile
     container_name: go-worker
-    depends_on:
-      - redis
+    restart: always
     environment:
       - REDIS_ADDR=redis:6379
+      - RUNNER_URL=http://runner-service:9000
+    depends_on:
+      - redis
+      - runner-service
+    networks:
+      - appnet
 
-  python-worker:
+  py-worker:
     build:
-      context: ./python-worker
-      dockerfile: ../docker/go-service/Dockerfile
-    container_name: python-worker
-    depends_on:
-      - redis
+      context: ./py-worker
+      dockerfile: Dockerfile
+    container_name: py-worker
+    restart: always
     environment:
       - REDIS_ADDR=redis:6379
+      - RUNNER_URL=http://runner-service:9000
+    depends_on:
+      - redis
+      - runner-service
+    networks:
+      - appnet
 
-  redis:
-    image: redis:7
-    container_name: redis
+  # -------------------------
+  # FRONTEND
+  # -------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: frontend-builder
+    command: ["sh", "-c", "npm run build"]
+    volumes:
+      - frontend_dist:/app/dist
+    networks:
+      - appnet
+
+  # -------------------------
+  # NGINX
+  # -------------------------
+  nginx:
+    build:
+      context: .
+      dockerfile: ./docker/nginx/Dockerfile
+    container_name: nginx
+    restart: always
+    depends_on:
+      - api-service
+      - frontend
     ports:
-      - "6379:6379"
+      - "80:80"
+    volumes:
+      - frontend_dist:/usr/share/nginx/html
+    networks:
+      - appnet
 
+  # -------------------------
+  # PROMETHEUS
+  # -------------------------
   prometheus:
     image: prom/prometheus
     container_name: prometheus
+    restart: always
     volumes:
-      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - "./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml"
     ports:
       - "9090:9090"
-    depends_on:
-      - api-service
-      - api-worker
-      - go-worker
-      - python-worker
+    networks:
+      - appnet
 
+  # -------------------------
+  # GRAFANA
+  # -------------------------
   grafana:
-    image: grafana/grafana
+    image: grafana/grafana:latest
     container_name: grafana
+    restart: always
     ports:
-      - "3000:3000"
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
     depends_on:
       - prometheus
     volumes:
-      - grafana-data:/var/lib/grafana
+      - grafana_data:/var/lib/grafana
+    networks:
+      - appnet
 
 volumes:
-  grafana-data:
+  frontend_dist:
+  grafana_data:
+
+networks:
+  appnet:
+    driver: bridge

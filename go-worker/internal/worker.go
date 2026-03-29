@@ -24,6 +24,7 @@ func (worker *Worker) mainLoop(ctx context.Context) {
 			time.Sleep(250 * time.Millisecond)
 			continue
 		}
+		log.Printf("[worker %s] GetTask: taskId=%q, err=%v", worker.consumerID, task.Id, err)
 
 		if task.Id == "" {
 			continue
@@ -37,6 +38,7 @@ func (worker *Worker) mainLoop(ctx context.Context) {
 		} else {
 			worker.failed++
 		}
+		log.Printf("execute task succsessful")
 
 		err = WriteResult(worker.client, ctx, result, task.Id)
 		if err != nil {

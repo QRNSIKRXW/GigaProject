@@ -17,18 +17,12 @@ import (
 
 func main() {
 
-	go func() {
-		http.Handle("/metrics", promhttp.Handler())
-		log.Println("metrics server started on :9100")
-		if err := http.ListenAndServe(":9100", nil); err != nil {
-			log.Fatalf("metrics server failed: %v", err)
-		}
-	}()
-
 	client := internal.StartRedis()
 	defer client.Close()
 
 	r := mux.NewRouter()
+
+	r.Handle("/metrics", promhttp.Handler())
 
 	r.HandleFunc("/internals/workers", internal.WorkersHandler(client)).Methods("GET")
 	r.HandleFunc("/internals/workers/{id}", internal.WorkerByIdHandler(client))
@@ -37,7 +31,7 @@ func main() {
 
 	srv := &http.Server{
 		Handler: r,
-		Addr:    "8080",
+		Addr:    ":8080",
 	}
 
 	log.Println("server started on :8080")

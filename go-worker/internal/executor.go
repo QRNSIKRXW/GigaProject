@@ -1,169 +1,234 @@
 package internal
 
 import (
-	"bufio"
+	"bytes"
 	"context"
-	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
+	"encoding/json"
+	"log"
+	"net/http"
+	"strings"
+	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
 )
 
+var httpClient = &http.Client{
+	Timeout: 20 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 50,
+		IdleConnTimeout:     90 * time.Second,
+	},
+}
+
+// 🔥 МЕТРИКИ
+var (
+	executorTasksTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "executor_tasks_total",
+		Help: "Total number of tasks processed",
+	})
+
+	executorTasksFailed = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "executor_tasks_failed_total",
+		Help: "Total number of failed tasks",
+	})
+
+	executorTasksSuccess = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "executor_tasks_success_total",
+		Help: "Total number of successful tasks",
+	})
+
+	executorTaskDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "executor_task_duration_seconds",
+		Help:    "Task execution duration",
+		Buckets: prometheus.DefBuckets,
+	})
+
+	executorRunnerErrors = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "executor_runner_errors_total",
+		Help: "Runner communication errors",
+	})
+
+	executorPubSubErrors = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "executor_pubsub_errors_total",
+		Help: "Redis PubSub errors",
+	})
+)
+
+func init() {
+	prometheus.MustRegister(
+		executorTasksTotal,
+		executorTasksFailed,
+		executorTasksSuccess,
+		executorTaskDuration,
+		executorRunnerErrors,
+		executorPubSubErrors,
+	)
+}
+
 func ExecuteTask(client *redis.Client, task Task) (result TaskStatus) {
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	start := time.Now()
+	executorTasksTotal.Inc()
+
+	defer func() {
+		executorTaskDuration.Observe(time.Since(start).Seconds())
+	}()
+
+	if len(task.Code) > MaxCodeSize {
+		executorTasksFailed.Inc()
+		return TaskStatus{
+			Status: "error",
+			Error:  "code size limit exceeded",
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 
-	dir, err := CreateTempDir()
+	sub := client.Subscribe(ctx, "task:"+task.Id)
+
+	// 🔥 ВАЖНО: дождаться подтверждения подписки
+	_, err := sub.Receive(ctx)
 	if err != nil {
+		executorPubSubErrors.Inc()
 		return TaskStatus{
 			Status: "error",
-			Result: "",
-			Error:  err.Error(),
+			Error:  "pubsub subscribe failed",
 		}
 	}
-	defer os.RemoveAll(dir)
 
-	_, err = writeCodeFile(dir, task)
+	ch := sub.Channel()
+
+	buffer := NewLimitedBuffer(1_000_000)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	go func() {
+		defer wg.Done()
+
+		for {
+			select {
+			case msg, ok := <-ch:
+				if !ok {
+					return
+				}
+
+				var line RedisLine
+				if err := json.Unmarshal([]byte(msg.Payload), &line); err != nil {
+					continue
+				}
+
+				if line.TaskId != task.Id {
+					continue
+				}
+
+				buffer.Write([]byte(line.Line + "\n"))
+
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	req := RunRequest{
+		TaskId: task.Id,
+		Lang:   task.Lang,
+		Code:   task.Code,
+	}
+
+	body, _ := json.Marshal(req)
+
+	httpReq, err := http.NewRequest("POST", "http://runner-service:9000/", bytes.NewBuffer(body))
 	if err != nil {
+		executorTasksFailed.Inc()
 		return TaskStatus{
 			Status: "error",
-			Result: "",
-			Error:  err.Error(),
+			Error:  "internal request error",
 		}
 	}
 
-	filename := "main.go"
+	httpReq.Header.Set("Content-Type", "application/json")
 
-	stdout, stderr, codeErr := runDocker(client, dir, ctx, filename, task.Id)
-	if codeErr != nil {
-
+	resp, err := httpClient.Do(httpReq)
+	if err != nil {
+		executorRunnerErrors.Inc()
+		executorTasksFailed.Inc()
 		return TaskStatus{
 			Status: "error",
-			Result: "",
-			Error:  codeErr.Error(),
+			Error:  "runner unavailable",
 		}
-
 	}
+	defer resp.Body.Close()
+
+	log.Println("Post successful")
+
+	var runRes RunResponse
+	json.NewDecoder(resp.Body).Decode(&runRes)
+
+	// 🔥 корректное завершение
+	sub.Close()
+	cancel()
+
+	done := make(chan struct{})
+
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		log.Println("timeout waiting pubsub reader")
+	}
+
+	if runRes.Status == "error" {
+		executorTasksFailed.Inc()
+		return TaskStatus{
+			Status: "error",
+			Error:  runRes.Error,
+		}
+	}
+
+	output := buffer.String()
+
+	if containsUserError(output) {
+		executorTasksFailed.Inc()
+		return TaskStatus{
+			Status: "failed",
+			Result: output,
+			Error:  extractErrorLine(output),
+		}
+	}
+
+	executorTasksSuccess.Inc()
 
 	return TaskStatus{
 		Status: "done",
-		Result: stdout,
-		Error:  stderr,
+		Result: output,
 	}
-
 }
 
-func CreateTempDir() (string, error) {
-
-	name := "Playground-*"
-	dirname, err := os.MkdirTemp("", name)
-	if err != nil {
-		return "", err
-	}
-	return dirname, err
-
+func containsUserError(out string) bool {
+	return strings.Contains(out, "panic") ||
+		strings.Contains(out, "Traceback") ||
+		strings.Contains(out, "error:")
 }
 
-func writeCodeFile(dir string, task Task) (string, error) {
-
-	fileName := filepath.Join(dir, ("main.go"))
-
-	if len(task.Code) > MaxCodeSize {
-		return "", fmt.Errorf("code size limit exceeded")
-	}
-
-	err := os.WriteFile(fileName, []byte(task.Code), 0666)
-	if err != nil {
-		return "", err
-	}
-
-	return fileName, nil
-
-}
-
-func runDocker(client *redis.Client, dir string, ctx context.Context, filename string, id string) (stdout string, stderr string, codeErr error) {
-
-	cmd := createRequest(ctx, dir, filename)
-
-	stdoutPipe, _ := cmd.StdoutPipe()
-	stderrPipe, _ := cmd.StderrPipe()
-
-	if err := cmd.Start(); err != nil {
-		return "", "", fmt.Errorf("docker start error: %w", err)
-	}
-
-	outBuf := NewLimitedBuffer(1_000_000)
-	errBuf := NewLimitedBuffer(1_000_000)
-
-	go func() {
-		scanner := bufio.NewScanner(stdoutPipe)
-		for scanner.Scan() {
-			middleResult := scanner.Text()
-			outBuf.Write([]byte(middleResult + "\n"))
-			WritePubSub(client, ctx, middleResult, id)
+func extractErrorLine(out string) string {
+	lines := strings.Split(out, "\n")
+	for _, l := range lines {
+		if strings.Contains(l, "panic") ||
+			strings.Contains(l, "Traceback") ||
+			strings.Contains(l, "error:") {
+			return l
 		}
-	}()
-
-	go func() {
-		scanner := bufio.NewScanner(stderrPipe)
-		for scanner.Scan() {
-			middleResult := scanner.Text()
-			outBuf.Write([]byte(middleResult + "\n"))
-			WritePubSub(client, ctx, middleResult, id)
-		}
-	}()
-
-	err := cmd.Wait()
-
-	if ctx.Err() == context.DeadlineExceeded {
-		return "", "timeout", fmt.Errorf("execution timeout")
 	}
-
-	stdout = outBuf.String()
-	stderr = errBuf.String()
-
-	// Ошибка выполнения контейнера
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-
-			switch exitErr.ExitCode() {
-			case 125, 126, 127:
-				return "", "", fmt.Errorf("docker crashed (exit code %d)", exitErr.ExitCode()) // потом поменять internal error
-			default:
-				// обычная ошибка пользовательского кода
-				return stdout, stderr, nil
-			}
-		}
-
-		// docker не запустился вообще
-		return "", "", fmt.Errorf("docker hadnt been started") // потом поменять на internal error
-	}
-
-	// Успешное выполнение
-	return stdout, stderr, nil
-}
-
-func createRequest(ctx context.Context, dir string, filename string) (cmd *exec.Cmd) {
-
-	args := []string{
-		"run",
-		"--rm",
-		"--network", "none",
-		"--memory", "128m",
-		"--cpus", "0.5",
-		"--pids-limit", "64",
-		"--read-only",
-		"--tmpfs", "/tmp:rw,size=16m",
-		"-v", dir + ":/code",
-		"gorunner",
-		"go", "run", "/code/" + filename,
-	}
-
-	return exec.CommandContext(ctx, "docker", args...)
+	return ""
 }
 
 func recoverPending(client *redis.Client, ctx context.Context, stream string,
@@ -196,7 +261,6 @@ func recoverPending(client *redis.Client, ctx context.Context, stream string,
 	}
 
 	return tasks, nil
-
 }
 
 func claimAndExecute(worker *Worker, ctx context.Context, recoverIdArr []string) error {
@@ -221,7 +285,7 @@ func claimAndExecute(worker *Worker, ctx context.Context, recoverIdArr []string)
 
 		result := ExecuteTask(worker.client, task)
 
-		if result.Result == "done" {
+		if result.Status == "done" {
 			worker.processed++
 		} else {
 			worker.failed++
@@ -239,5 +303,4 @@ func claimAndExecute(worker *Worker, ctx context.Context, recoverIdArr []string)
 	}
 
 	return nil
-
 }

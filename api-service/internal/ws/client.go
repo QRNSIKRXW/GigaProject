@@ -1,71 +1,60 @@
 package ws
 
 import (
-	"log"
-	"time"
+	"encoding/json"
 
 	"github.com/gorilla/websocket"
 )
 
 type Client struct {
+	Hub       *Hub
 	WebSocket *websocket.Conn
 	Send      chan []byte
 	TaskId    string
 }
 
-func (c *Client) writePump(h *Hub) {
-	ticker := time.NewTicker(10 * time.Second)
+func (c *Client) readPump() {
 	defer func() {
-		ticker.Stop()
-		h.unregister <- c
+		c.Hub.unregister <- c
 		c.WebSocket.Close()
 	}()
 
-	c.WebSocket.SetCloseHandler(func(code int, text string) error {
-		log.Println("websocket: client disconnected")
-		return nil
-	})
-
 	for {
-		select {
+		_, msg, err := c.WebSocket.ReadMessage()
+		if err != nil {
+			return
+		}
 
-		case msg, ok := <-c.Send:
-			if !ok {
-				c.WebSocket.WriteMessage(websocket.CloseMessage, []byte{})
-				return
+		var req struct {
+			Type   string `json:"type"`
+			TaskId string `json:"taskId"`
+		}
+
+		if err := json.Unmarshal(msg, &req); err != nil {
+			continue
+		}
+
+		if req.Type == "subscribe" {
+
+			// если уже подписан — отписываемся
+			if c.TaskId != "" {
+				c.Hub.unregister <- c
 			}
 
-			if err := c.WebSocket.WriteMessage(websocket.TextMessage, msg); err != nil {
-				return
-			}
-
-		case <-ticker.C:
-			if err := c.WebSocket.WriteMessage(websocket.PingMessage, []byte{}); err != nil {
-				return
-			}
+			c.TaskId = req.TaskId
+			c.Hub.register <- c
 		}
 	}
 }
 
-func (c *Client) readPump(h *Hub) {
-	defer func() {
-		h.unregister <- c
-		c.WebSocket.Close()
-	}()
+func (c *Client) writePump() {
+	defer c.WebSocket.Close()
 
-	c.WebSocket.SetReadLimit(1024)
-	c.WebSocket.SetReadDeadline(time.Now().Add(30 * time.Second))
+	for msg := range c.Send {
 
-	c.WebSocket.SetPongHandler(func(string) error {
-		// клиент ответил pong → продлеваем дедлайн
-		c.WebSocket.SetReadDeadline(time.Now().Add(30 * time.Second))
-		return nil
-	})
-
-	for {
-		_, _, err := c.WebSocket.ReadMessage()
+		err := c.WebSocket.WriteMessage(websocket.TextMessage, msg)
 		if err != nil {
-			break
+			return
 		}
 	}
 }

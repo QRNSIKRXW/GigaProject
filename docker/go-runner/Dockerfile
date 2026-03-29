@@ -1,10 +1,5 @@
-FROM golang:1.22-alpine
+FROM golang:1.25.5-alpine
 
-# Устанавливаем рабочую директорию
-WORKDIR /code
+WORKDIR /sandbox
 
-# Устанавливаем необходимые зависимости
-RUN apk add --no-cache build-base
-
-# Контейнер будет запускать команду, которую передаст воркер:
-# docker run ... gorunner go run /code/main.go
+CMD ["sleep", "infinity"]
