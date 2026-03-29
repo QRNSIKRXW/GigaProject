@@ -18,7 +18,6 @@ func main() {
 	client := internal.StartRedis()
 	defer client.Close()
 
-	// создаём пул: 3 Go, 2 Python (можно настраивать)
 	pool, err := internal.NewPool(3, 2)
 	if err != nil {
 		log.Fatal("failed to create pool:", err)

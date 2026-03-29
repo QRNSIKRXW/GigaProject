@@ -3,7 +3,6 @@ package internal
 import (
 	"bufio"
 	"context"
-	"encoding/base64"
 	"fmt"
 	"io"
 	"os/exec"
@@ -32,7 +31,6 @@ func NewPool(numGo, numPy int) (*Pool, error) {
 	p := &Pool{}
 
 	for i := 0; i < numGo; i++ {
-
 		name := fmt.Sprintf("gorunner-%d", i)
 
 		if err := startContainer(name, "gorunner"); err != nil {
@@ -47,7 +45,6 @@ func NewPool(numGo, numPy int) (*Pool, error) {
 	}
 
 	for i := 0; i < numPy; i++ {
-
 		name := fmt.Sprintf("pyrunner-%d", i)
 
 		if err := startContainer(name, "pyrunner"); err != nil {
@@ -67,7 +64,6 @@ func NewPool(numGo, numPy int) (*Pool, error) {
 func startContainer(name, image string) error {
 
 	cmd := exec.Command("docker", "inspect", name)
-
 	if err := cmd.Run(); err == nil {
 		return nil
 	}
@@ -76,31 +72,21 @@ func startContainer(name, image string) error {
 		"docker", "run", "-d",
 		"--name", name,
 
+		"--tmpfs", "/tmp:rw,size=256m",
+
 		"--network", "none",
-		"--read-only",
-		"--tmpfs", "/sandbox:rw, size=128m",
-
-		"--user", "1000:1000",
-
 		"--cap-drop=ALL",
 		"--security-opt=no-new-privileges",
-		"--security-opt=seccomp=default",
 
 		"--memory", "256m",
 		"--cpus", "0.5",
-		"--cpu-period", "100000",
-		"--cpu-quota", "50000",
 		"--pids-limit", "128",
-
-		"--ulimit", "nofile=64:64",
-		"--ulimit", "nproc=64:64",
 
 		image,
 		"sleep", "infinity",
 	)
 
 	out, err := run.CombinedOutput()
-
 	if err != nil {
 		return fmt.Errorf("failed to start container %s: %v, output: %s", name, err, string(out))
 	}
@@ -113,9 +99,7 @@ func (p *Pool) nextWorker(lang string) *Worker {
 	start := atomic.AddUint32(&p.idx, 1)
 
 	for i := 0; i < len(p.workers); i++ {
-
 		w := p.workers[(int(start)+i)%len(p.workers)]
-
 		if w.Lang == lang {
 			return w
 		}
@@ -124,13 +108,18 @@ func (p *Pool) nextWorker(lang string) *Worker {
 	return nil
 }
 
-func (p *Pool) RunDocker(client *redis.Client, parentCtx context.Context, code string, id string, lang string) (string, string) {
+func (p *Pool) RunDocker(
+	client *redis.Client,
+	parentCtx context.Context,
+	code string,
+	id string,
+	lang string,
+) (string, string) {
 
 	execCtx, cancel := context.WithTimeout(parentCtx, 15*time.Second)
 	defer cancel()
 
 	worker := p.nextWorker(lang)
-
 	if worker == nil {
 		return "error", "no available worker"
 	}
@@ -138,44 +127,47 @@ func (p *Pool) RunDocker(client *redis.Client, parentCtx context.Context, code s
 	worker.sem <- struct{}{}
 	defer func() { <-worker.sem }()
 
-	tmpDir := "/sandbox/tmp"
-
-	codeB64 := base64.StdEncoding.EncodeToString([]byte(code))
-
 	var cmdArgs []string
 
-	if lang == "golang" {
+	switch lang {
 
-		cmdArgs = []string{"sh", "-c",
+	case "golang":
+		cmdArgs = []string{
+			"sh", "-c",
 			fmt.Sprintf(`
-FILE=%s/%s.go
-BIN=%s/%s_bin
-echo %s | base64 -d > $FILE
-mkdir -p %s/go-cache
-GOTMPDIR=%s GOCACHE=%s/go-cache go build -o $BIN $FILE
-$BIN
-rm -f $FILE $BIN
-`,
-				tmpDir, id,
-				tmpDir, id,
-				codeB64,
-				tmpDir,
-				tmpDir,
-				tmpDir)}
+set -e
 
-	} else if lang == "python" {
+mkdir -p /workspace
 
-		cmdArgs = []string{"sh", "-c",
+cat > /workspace/main.go << 'EOF'
+%s
+EOF
+
+cd /workspace
+
+go build -o main_bin main.go
+
+./main_bin
+`, code),
+		}
+
+	case "python":
+		cmdArgs = []string{
+			"sh", "-c",
 			fmt.Sprintf(`
-FILE=%s/%s.py
-echo %s | base64 -d > $FILE
-python3 -I -B $FILE
-rm -f $FILE
-`,
-				tmpDir, id,
-				codeB64)}
+set -e
 
-	} else {
+mkdir -p /workspace
+
+cat > /workspace/main.py << 'EOF'
+%s
+EOF
+
+python3 /workspace/main.py
+`, code),
+		}
+
+	default:
 		return "error", "unknown language"
 	}
 
@@ -205,19 +197,14 @@ rm -f $FILE
 	var hadOutput atomic.Bool
 
 	readPipe := func(pipe io.Reader) {
-
 		defer wg.Done()
 
 		scanner := bufio.NewScanner(pipe)
 		scanner.Buffer(make([]byte, 0, 1024), 1024*1024)
 
 		for scanner.Scan() {
-
-			line := scanner.Text()
-
 			hadOutput.Store(true)
-
-			_ = WritePubSub(client, line, id)
+			_ = WritePubSub(client, scanner.Text(), id)
 		}
 	}
 
@@ -233,23 +220,19 @@ rm -f $FILE
 	select {
 
 	case <-execCtx.Done():
-
 		wg.Wait()
 
 		if hadOutput.Load() {
 			return "done", ""
 		}
-
 		return "error", "timeout"
 
 	case err := <-waitCh:
-
 		wg.Wait()
 
 		if err != nil {
 			return "error", err.Error()
 		}
-
 		return "done", ""
 	}
 }
