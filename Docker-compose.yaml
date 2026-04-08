@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   redis:
     image: redis:7
@@ -11,7 +9,7 @@ services:
       - appnet
 
   # -------------------------
-  # RUNNER SERVICE
+  # RUNNER SERVICE (API Gateway)
   # -------------------------
   runner-service:
     build:
@@ -30,40 +28,77 @@ services:
     ports:
       - "9000:9000"
     depends_on:
-      - gorunner
-      - pyrunner
+      - redis
 
   # -------------------------
-  # GORUNNER POOL
+  # GORUNNER POOL (множество контейнеров)
   # -------------------------
-  gorunner:
+  gorunner-0:
     build:
       context: ./docker/go-runner
       dockerfile: Dockerfile
-    container_name: gorunner
-    command: ["sleep", "infinity"]
+    container_name: gorunner-0
     restart: always
+    environment:
+      - LANG_TYPE=golang
     tmpfs:
-      - /sandbox/tmp
-    volumes:
-      - /tmp/runner-tmp:/sandbox:rw
+      - /tmp:rw,size=256m,exec
+    networks:
+      - appnet
+    # Убираем command: ["sleep", "infinity"] - используем CMD из Dockerfile
+
+  gorunner-1:
+    build:
+      context: ./docker/go-runner
+      dockerfile: Dockerfile
+    container_name: gorunner-1
+    restart: always
+    environment:
+      - LANG_TYPE=golang
+    tmpfs:
+      - /tmp:rw,size=256m,exec
+    networks:
+      - appnet
+
+  gorunner-2:
+    build:
+      context: ./docker/go-runner
+      dockerfile: Dockerfile
+    container_name: gorunner-2
+    restart: always
+    environment:
+      - LANG_TYPE=golang
+    tmpfs:
+      - /tmp:rw,size=256m,exec
     networks:
       - appnet
 
   # -------------------------
-  # PYRUNNER POOL
+  # PYRUNNER POOL (множество контейнеров)
   # -------------------------
-  pyrunner:
+  pyrunner-0:
     build:
       context: ./docker/python-runner
       dockerfile: Dockerfile
-    container_name: pyrunner
-    command: ["sleep", "infinity"]
+    container_name: pyrunner-0
     restart: always
+    environment:
+      - LANG_TYPE=python
     tmpfs:
-      - /sandbox/tmp
-    volumes:
-      - /tmp/runner-tmp:/sandbox:rw
+      - /tmp:rw,size=256m,exec
+    networks:
+      - appnet
+
+  pyrunner-1:
+    build:
+      context: ./docker/python-runner
+      dockerfile: Dockerfile
+    container_name: pyrunner-1
+    restart: always
+    environment:
+      - LANG_TYPE=python
+    tmpfs:
+      - /tmp:rw,size=256m,exec
     networks:
       - appnet
 

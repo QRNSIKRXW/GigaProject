@@ -1,5 +1,14 @@
-FROM golang:1.25.5-alpine
+FROM golang:1.21-alpine
 
-WORKDIR /sandbox
+# Устанавливаем необходимые пакеты
+RUN apk add --no-cache git
 
-CMD ["sleep", "infinity"]
+WORKDIR /app
+
+# Копируем и компилируем сервер
+COPY main.go .
+RUN go build -o server main.go
+
+EXPOSE 8080
+
+CMD ["./server"]
