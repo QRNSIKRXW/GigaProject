@@ -1,21 +1,21 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
-	"strings"
+	"path/filepath"
 	"time"
 )
 
 var semaphore = make(chan struct{}, 4)
 
-var req struct {
-	Code      string `json:"code"`
-	SessionID string `json:"session_id"`
+type Request struct {
+	Code string `json:"code"`
 }
 
 func main() {
@@ -32,85 +32,107 @@ func main() {
 			return
 		}
 
+		var req Request
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-			return
-		}
-
-		if req.Code == "" {
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{"error": "empty code"})
 			return
 		}
 
 		select {
 		case semaphore <- struct{}{}:
-			go func() {
-				defer func() { <-semaphore }()
-				output, err := runCode(req.Code, lang)
-				if err != nil {
-					fmt.Printf("Execution error: %v\n", err)
-				}
-				if output != "" {
-					fmt.Print(output)
-				}
-			}()
+			defer func() { <-semaphore }()
 		default:
 			w.WriteHeader(http.StatusServiceUnavailable)
-			json.NewEncoder(w).Encode(map[string]string{"error": "server busy"})
 			return
 		}
 
-		w.WriteHeader(http.StatusAccepted)
-		json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "Streaming not supported", 500)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		err := runCodeStream(ctx, w, flusher, req.Code, lang)
+		if err != nil {
+			fmt.Fprintf(w, "ERR:%v\n", err)
+		}
+
+		fmt.Fprintln(w, "END")
+		flusher.Flush()
 	})
 
-	if err := http.ListenAndServe(":8080", nil); err != nil {
-		fmt.Printf("Server error: %v\n", err)
-	}
+	http.ListenAndServe(":8080", nil)
 }
 
-func runCode(code, lang string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	// Создаем уникальную временную директорию
-	tmpDir := fmt.Sprintf("/tmp/run_%d", time.Now().UnixNano())
+func runCodeStream(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, code, lang string) error {
+	tmpDir, err := os.MkdirTemp("/tmp", "run_*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmpDir)
 
 	var cmd *exec.Cmd
 
 	switch lang {
 	case "golang":
+		mainFile := filepath.Join(tmpDir, "main.go")
+		if err := os.WriteFile(mainFile, []byte(code), 0644); err != nil {
+			return err
+		}
 
 		cmd = exec.CommandContext(ctx, "sh", "-c", fmt.Sprintf(`
-mkdir -p %s
 cd %s
-cat > main.go
 go build -o main main.go
 ./main
-rm -rf %s
-`, tmpDir, tmpDir, tmpDir))
+`, tmpDir))
 
 	case "python":
-		cmd = exec.CommandContext(ctx, "sh", "-c", fmt.Sprintf(`
-mkdir -p %s
-cd %s
-cat > main.py
-python3 main.py
-rm -rf %s
-`, tmpDir, tmpDir, tmpDir))
+		mainFile := filepath.Join(tmpDir, "main.py")
+		if err := os.WriteFile(mainFile, []byte(code), 0644); err != nil {
+			return err
+		}
+
+		cmd = exec.CommandContext(ctx, "python3", mainFile)
 
 	default:
-		return "", fmt.Errorf("unknown language: %s", lang)
+		return fmt.Errorf("unknown language")
 	}
 
-	cmd.Stdin = strings.NewReader(code)
+	stdout, _ := cmd.StdoutPipe()
+	stderr, _ := cmd.StderrPipe()
 
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return string(output), fmt.Errorf("execution error: %v, output: %s", err, string(output)) // Есть проблема с гонками вывода
+	if err := cmd.Start(); err != nil {
+		return err
 	}
 
-	return string(output), nil
+	// stdout
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			fmt.Fprintf(w, "OUT:%s\n", scanner.Text())
+			flusher.Flush()
+		}
+	}()
+
+	// stderr
+	go func() {
+		scanner := bufio.NewScanner(stderr)
+		for scanner.Scan() {
+			fmt.Fprintf(w, "ERR:%s\n", scanner.Text())
+			flusher.Flush()
+		}
+	}()
+
+	err = cmd.Wait()
+	if ctx.Err() == context.DeadlineExceeded {
+		return fmt.Errorf("timeout")
+	}
+
+	return err
 }

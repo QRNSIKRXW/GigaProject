@@ -7,14 +7,15 @@ import (
 	"sync"
 	"time"
 
+	"log"
+
 	"github.com/gorilla/websocket"
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
 )
 
 type BroadcastMessage struct {
-	TaskId string `json:"taskId"`
-	Line   string `json:"line"`
+	Type string `json:"type"` // stdout | stderr
+	Line string `json:"line"`
 }
 
 type subscription struct {
@@ -26,39 +27,17 @@ type Hub struct {
 	Clients    map[string]map[*Client]bool
 	register   chan *Client
 	unregister chan *Client
-	broadcast  chan BroadcastMessage
-	done       chan bool
-	wg         sync.WaitGroup
+	broadcast  chan struct {
+		taskId string
+		data   []byte
+	}
+	done chan bool
+	wg   sync.WaitGroup
 
 	Rdb *redis.Client
 
 	subs map[string]*subscription
 	mu   sync.Mutex
-}
-
-// 🔥 лимиты
-const maxClientsPerTask = 100
-
-// 🔥 метрики
-var (
-	wsConnections = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "ws_active_connections",
-		Help: "Active websocket connections",
-	})
-
-	wsDroppedMessages = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "ws_dropped_messages_total",
-		Help: "Dropped WS messages due to backpressure",
-	})
-
-	wsBroadcastTotal = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "ws_broadcast_total",
-		Help: "Total broadcast messages",
-	})
-)
-
-func init() {
-	prometheus.MustRegister(wsConnections, wsDroppedMessages, wsBroadcastTotal)
 }
 
 var Upgrader = websocket.Upgrader{
@@ -74,10 +53,13 @@ func CreateHub(rdb *redis.Client) *Hub {
 		Clients:    make(map[string]map[*Client]bool),
 		register:   make(chan *Client),
 		unregister: make(chan *Client),
-		broadcast:  make(chan BroadcastMessage, 256),
-		done:       make(chan bool),
-		Rdb:        rdb,
-		subs:       make(map[string]*subscription),
+		broadcast: make(chan struct {
+			taskId string
+			data   []byte
+		}, 256),
+		done: make(chan bool),
+		Rdb:  rdb,
+		subs: make(map[string]*subscription),
 	}
 }
 
@@ -87,6 +69,7 @@ func (h *Hub) StartHub() {
 
 	for {
 		select {
+
 		case client := <-h.register:
 
 			if client.TaskId == "" {
@@ -97,26 +80,14 @@ func (h *Hub) StartHub() {
 				h.Clients[client.TaskId] = make(map[*Client]bool)
 			}
 
-			// 🔥 лимит
-			if len(h.Clients[client.TaskId]) >= maxClientsPerTask {
-				close(client.Send)
-				continue
-			}
-
 			h.Clients[client.TaskId][client] = true
-			wsConnections.Inc()
-
 			h.startSubscription(client.TaskId)
 
 		case client := <-h.unregister:
 
 			if clients, ok := h.Clients[client.TaskId]; ok {
 
-				if _, exists := clients[client]; exists {
-					delete(clients, client)
-					close(client.Send)
-					wsConnections.Dec()
-				}
+				delete(clients, client)
 
 				if len(clients) == 0 {
 					delete(h.Clients, client.TaskId)
@@ -126,21 +97,15 @@ func (h *Hub) StartHub() {
 
 		case msg := <-h.broadcast:
 
-			wsBroadcastTotal.Inc()
-
-			payload, _ := json.Marshal(msg)
-
-			if clients, ok := h.Clients[msg.TaskId]; ok {
+			if clients, ok := h.Clients[msg.taskId]; ok {
 
 				for client := range clients {
 
 					select {
-					case client.Send <- payload:
+					case client.Send <- msg.data:
 					default:
-						wsDroppedMessages.Inc()
 						close(client.Send)
 						delete(clients, client)
-						wsConnections.Dec()
 					}
 				}
 			}
@@ -150,6 +115,8 @@ func (h *Hub) StartHub() {
 		}
 	}
 }
+
+// ---------- SUBSCRIPTIONS ----------
 
 func (h *Hub) startSubscription(taskId string) {
 
@@ -190,37 +157,58 @@ func (h *Hub) stopSubscription(taskId string) {
 	}
 }
 
+// ---------- 🔥 ГЛАВНОЕ ИСПРАВЛЕНИЕ ----------
+
 func (h *Hub) runPubSub(ctx context.Context, taskId string) {
 
-	channel := "task:" + taskId
+	outCh := "task:" + taskId + ":out"
+	errCh := "task:" + taskId + ":err"
 
-	sub := h.Rdb.Subscribe(ctx, channel)
-
-	_, err := sub.Receive(ctx)
-	if err != nil {
-		return
-	}
+	sub := h.Rdb.Subscribe(ctx, outCh, errCh)
+	defer sub.Close()
 
 	ch := sub.Channel()
 
-	defer sub.Close()
-
 	for {
 		select {
+
 		case msg, ok := <-ch:
 			if !ok {
 				return
 			}
 
-			var data BroadcastMessage
-			if err := json.Unmarshal([]byte(msg.Payload), &data); err != nil {
+			var payload struct {
+				Line string `json:"line"`
+			}
+
+			if err := json.Unmarshal([]byte(msg.Payload), &payload); err != nil {
 				continue
 			}
 
+			var msgType string
+
+			if msg.Channel == outCh {
+				msgType = "stdout"
+			} else {
+				msgType = "stderr"
+			}
+
+			log.Printf("Received message on channel %s: %s", msg.Channel, payload.Line)
+			log.Printf("Broadcasting message of type %s for task %s", msgType, taskId)
+
+			finalMsg, _ := json.Marshal(BroadcastMessage{
+				Type: msgType,
+				Line: payload.Line,
+			})
+
 			select {
-			case h.broadcast <- data:
+			case h.broadcast <- struct {
+				taskId string
+				data   []byte
+			}{taskId: taskId, data: finalMsg}:
+
 			default:
-				wsDroppedMessages.Inc()
+				// backpressure drop
 			}
 
 		case <-ctx.Done():
@@ -229,7 +217,8 @@ func (h *Hub) runPubSub(ctx context.Context, taskId string) {
 	}
 }
 
-// 🔥 graceful shutdown
+// ---------- SHUTDOWN ----------
+
 func (h *Hub) Shutdown() {
 
 	close(h.done)
@@ -240,8 +229,6 @@ func (h *Hub) Shutdown() {
 	}
 	h.mu.Unlock()
 
-	// даём pubsub время завершиться
 	time.Sleep(100 * time.Millisecond)
-
 	h.wg.Wait()
 }

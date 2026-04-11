@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 
+	"log"
+
 	"github.com/redis/go-redis/v9"
 )
 
@@ -38,12 +40,13 @@ func WritePubSub(client *redis.Client, middleResult string, id string) error {
 
 	var lastErr error
 	for i := 0; i < 4; i++ {
-		err = client.Publish(ctx, "task:"+id, payload).Err()
+		log.Printf("Attempting to publish to channel task:%s: %s", id, payload)
+		err = client.Publish(ctx, id, payload).Err()
 		if err == nil {
 			return nil
 		}
 		lastErr = err
-		fmt.Println("PUBLISH ERROR:", err)
+		fmt.Printf("PUBLISH ERROR: %v\n", err)
 	}
 
 	return lastErr

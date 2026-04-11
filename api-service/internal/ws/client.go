@@ -36,7 +36,7 @@ func (c *Client) readPump() {
 
 		if req.Type == "subscribe" {
 
-			// если уже подписан — отписываемся
+			// переподписка
 			if c.TaskId != "" {
 				c.Hub.unregister <- c
 			}
@@ -48,10 +48,13 @@ func (c *Client) readPump() {
 }
 
 func (c *Client) writePump() {
-	defer c.WebSocket.Close()
+	defer func() {
+		// 🔥 важно: корректное закрытие канала
+		close(c.Send)
+		c.WebSocket.Close()
+	}()
 
 	for msg := range c.Send {
-
 		err := c.WebSocket.WriteMessage(websocket.TextMessage, msg)
 		if err != nil {
 			return
