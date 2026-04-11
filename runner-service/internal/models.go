@@ -17,8 +17,7 @@ type RunRequest struct {
 }
 
 type RedisLine struct {
-	TaskId string `json:"taskId"`
-	Line   string `json:"line"`
+	Line string `json:"line"`
 }
 
 type RunResponse struct {
@@ -27,5 +26,5 @@ type RunResponse struct {
 }
 
 type DockerRunner interface {
-	RunDocker(*redis.Client, context.Context, string, string, string) (string, string)
+	RunDocker(client *redis.Client, parentCtx context.Context, code string, id string, lang string) (string, string)
 }

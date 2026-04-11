@@ -2,11 +2,14 @@ package internal
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os/exec"
-	"sync"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -16,7 +19,9 @@ import (
 type Worker struct {
 	ContainerName string
 	Lang          string
+	APIEndpoint   string
 	sem           chan struct{}
+	HttpClient    *http.Client
 }
 
 type Pool struct {
@@ -24,215 +29,299 @@ type Pool struct {
 	idx     uint32
 }
 
-func NewPool(numGo, numPy int) (*Pool, error) {
+// ---------- ERROR CLEANER ----------
 
-	const workerConcurrency = 4
+func cleanErrorLine(line string) string {
+	line = strings.TrimSpace(line)
 
-	p := &Pool{}
-
-	for i := 0; i < numGo; i++ {
-		name := fmt.Sprintf("gorunner-%d", i)
-
-		if err := startContainer(name, "gorunner"); err != nil {
-			return nil, err
-		}
-
-		p.workers = append(p.workers, &Worker{
-			ContainerName: name,
-			Lang:          "golang",
-			sem:           make(chan struct{}, workerConcurrency),
-		})
+	if line == "" {
+		return ""
 	}
 
-	for i := 0; i < numPy; i++ {
-		name := fmt.Sprintf("pyrunner-%d", i)
-
-		if err := startContainer(name, "pyrunner"); err != nil {
-			return nil, err
-		}
-
-		p.workers = append(p.workers, &Worker{
-			ContainerName: name,
-			Lang:          "python",
-			sem:           make(chan struct{}, workerConcurrency),
-		})
+	// убираем docker / shell шум
+	if strings.Contains(line, "exit status") {
+		return ""
 	}
 
-	return p, nil
+	if strings.Contains(line, "sh:") {
+		return ""
+	}
+
+	// Go build noise
+	if strings.Contains(line, "command-line-arguments") {
+		return "compile error"
+	}
+
+	// убираем file:line:column префиксы
+	if idx := strings.Index(line, ".go:"); idx != -1 {
+		parts := strings.SplitN(line[idx:], " ", 2)
+		if len(parts) == 2 {
+			return parts[1]
+		}
+		return "syntax error"
+	}
+
+	// python / runtime fallback
+	return line
 }
 
-func startContainer(name, image string) error {
+// ---------- CONTAINER START ----------
 
+func startContainer(name, image, langType string) error {
 	cmd := exec.Command("docker", "inspect", name)
 	if err := cmd.Run(); err == nil {
+		startCmd := exec.Command("docker", "start", name)
+		out, err := startCmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("failed to start container %s: %v, output: %s", name, err, string(out))
+		}
 		return nil
 	}
 
 	run := exec.Command(
 		"docker", "run", "-d",
 		"--name", name,
+		"--network=appnet",
 
-		"--tmpfs", "/tmp:rw,size=256m",
+		"--memory=128m",
+		"--memory-swap=128m",
+		"--cpus=0.3",
+		"--pids-limit=64",
 
-		"--network", "none",
-		"--cap-drop=ALL",
+		"--read-only",
+		"--tmpfs", "/tmp:rw,size=64m",
 		"--security-opt=no-new-privileges",
+		"--cap-drop=ALL",
 
-		"--memory", "256m",
-		"--cpus", "0.5",
-		"--pids-limit", "128",
-
+		"-e", fmt.Sprintf("LANG_TYPE=%s", langType),
 		image,
-		"sleep", "infinity",
 	)
 
 	out, err := run.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to start container %s: %v, output: %s", name, err, string(out))
+		return fmt.Errorf("failed to run container %s: %v, output: %s", name, err, string(out))
 	}
 
+	time.Sleep(1 * time.Second)
 	return nil
 }
 
-func (p *Pool) nextWorker(lang string) *Worker {
+// ---------- POOL INIT ----------
 
-	start := atomic.AddUint32(&p.idx, 1)
+func NewPool(numGo, numPy int) (*Pool, error) {
+	const workerConcurrency = 4
 
-	for i := 0; i < len(p.workers); i++ {
-		w := p.workers[(int(start)+i)%len(p.workers)]
-		if w.Lang == lang {
-			return w
-		}
+	p := &Pool{}
+
+	client := &http.Client{
+		Timeout: 30 * time.Second,
 	}
 
-	return nil
+	for i := 0; i < numGo; i++ {
+		name := fmt.Sprintf("gorunner-%d", i)
+
+		if err := startContainer(name, "gorunner", "golang"); err != nil {
+			return nil, err
+		}
+
+		p.workers = append(p.workers, &Worker{
+			ContainerName: name,
+			Lang:          "golang",
+			APIEndpoint:   fmt.Sprintf("http://%s:8080/exec", name),
+			sem:           make(chan struct{}, workerConcurrency),
+			HttpClient:    client,
+		})
+	}
+
+	for i := 0; i < numPy; i++ {
+		name := fmt.Sprintf("pyrunner-%d", i)
+
+		if err := startContainer(name, "pyrunner", "python"); err != nil {
+			return nil, err
+		}
+
+		p.workers = append(p.workers, &Worker{
+			ContainerName: name,
+			Lang:          "python",
+			APIEndpoint:   fmt.Sprintf("http://%s:8080/exec", name),
+			sem:           make(chan struct{}, workerConcurrency),
+			HttpClient:    client,
+		})
+	}
+
+	return p, nil
 }
 
-func (p *Pool) RunDocker(
-	client *redis.Client,
-	parentCtx context.Context,
-	code string,
-	id string,
-	lang string,
-) (string, string) {
+// ---------- RUN ----------
 
-	execCtx, cancel := context.WithTimeout(parentCtx, 15*time.Second)
-	defer cancel()
-
-	worker := p.nextWorker(lang)
-	if worker == nil {
-		return "error", "no available worker"
-	}
-
-	worker.sem <- struct{}{}
-	defer func() { <-worker.sem }()
-
-	var cmdArgs []string
-
-	switch lang {
-
-	case "golang":
-		cmdArgs = []string{
-			"sh", "-c",
-			fmt.Sprintf(`
-set -e
-
-mkdir -p /workspace
-
-cat > /workspace/main.go << 'EOF'
-%s
-EOF
-
-cd /workspace
-
-go build -o main_bin main.go
-
-./main_bin
-`, code),
-		}
-
-	case "python":
-		cmdArgs = []string{
-			"sh", "-c",
-			fmt.Sprintf(`
-set -e
-
-mkdir -p /workspace
-
-cat > /workspace/main.py << 'EOF'
-%s
-EOF
-
-python3 /workspace/main.py
-`, code),
-		}
-
-	default:
-		return "error", "unknown language"
-	}
-
-	runCmd := exec.CommandContext(
-		execCtx,
-		"docker",
-		append([]string{"exec", worker.ContainerName}, cmdArgs...)...,
-	)
-
-	stdoutPipe, err := runCmd.StdoutPipe()
-	if err != nil {
-		return "error", "stdout pipe error"
-	}
-
-	stderrPipe, err := runCmd.StderrPipe()
-	if err != nil {
-		return "error", "stderr pipe error"
-	}
-
-	if err := runCmd.Start(); err != nil {
-		return "error", fmt.Sprintf("docker exec failed: %v", err)
-	}
-
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	var hadOutput atomic.Bool
-
-	readPipe := func(pipe io.Reader) {
-		defer wg.Done()
-
-		scanner := bufio.NewScanner(pipe)
-		scanner.Buffer(make([]byte, 0, 1024), 1024*1024)
-
-		for scanner.Scan() {
-			hadOutput.Store(true)
-			_ = WritePubSub(client, scanner.Text(), id)
-		}
-	}
-
-	go readPipe(stdoutPipe)
-	go readPipe(stderrPipe)
-
-	waitCh := make(chan error, 1)
-
-	go func() {
-		waitCh <- runCmd.Wait()
-	}()
-
+func (p *Pool) RunCode(ctx context.Context, worker *Worker, code, lang, sessionID string) error {
 	select {
-
-	case <-execCtx.Done():
-		wg.Wait()
-
-		if hadOutput.Load() {
-			return "done", ""
-		}
-		return "error", "timeout"
-
-	case err := <-waitCh:
-		wg.Wait()
-
-		if err != nil {
-			return "error", err.Error()
-		}
-		return "done", ""
+	case worker.sem <- struct{}{}:
+		defer func() { <-worker.sem }()
+	case <-ctx.Done():
+		return ctx.Err()
 	}
+
+	reqBody, err := json.Marshal(map[string]string{
+		"code":       code,
+		"session_id": sessionID,
+	})
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", worker.APIEndpoint, bytes.NewReader(reqBody))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := worker.HttpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusAccepted {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("bad status: %d, body: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
+// ---------- LOG STREAM ----------
+
+func (p *Pool) RunCodeWithLogs(
+	client *redis.Client,
+	ctx context.Context,
+	code string,
+	sessionID string,
+	lang string,
+) (string, error) {
+
+	worker := p.getWorker(lang)
+	if worker == nil {
+		return "error", fmt.Errorf("no worker available")
+	}
+
+	reqBody, _ := json.Marshal(map[string]string{
+		"code": code,
+	})
+
+	req, err := http.NewRequestWithContext(ctx, "POST", worker.APIEndpoint, bytes.NewReader(reqBody))
+	if err != nil {
+		return "error", err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := worker.HttpClient.Do(req)
+	if err != nil {
+		return "error", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "error", fmt.Errorf("bad status: %d", resp.StatusCode)
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+
+	hadOutput := false
+	errorCount := 0
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		switch {
+		case strings.HasPrefix(line, "OUT:"):
+			msg := strings.TrimPrefix(line, "OUT:")
+			msg = strings.TrimSpace(msg)
+			if msg == "" {
+				continue
+			}
+
+			hadOutput = true
+			WritePubSub(client, msg, "task:"+sessionID+":out")
+
+		case strings.HasPrefix(line, "ERR:"):
+			msg := strings.TrimPrefix(line, "ERR:")
+			msg = cleanErrorLine(msg)
+
+			if msg == "" {
+				continue
+			}
+
+			errorCount++
+			WritePubSub(client, msg, "task:"+sessionID+":err")
+
+		case line == "END":
+			if hadOutput {
+				return "done", nil
+			}
+
+			if errorCount > 0 {
+				// если были ошибки — уже отправили их в ERR stream
+				return "error", nil
+			}
+
+			return "error", fmt.Errorf("no output")
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return "error", err
+	}
+
+	return "error", fmt.Errorf("unexpected end")
+}
+
+// ---------- WORKER SELECTION ----------
+
+func (p *Pool) getWorker(lang string) *Worker {
+	var list []*Worker
+
+	for _, w := range p.workers {
+		if w.Lang == lang {
+			list = append(list, w)
+		}
+	}
+
+	if len(list) == 0 {
+		return nil
+	}
+
+	idx := atomic.AddUint32(&p.idx, 1)
+	return list[int(idx)%len(list)]
+}
+
+func (p *Pool) GetWorkerCount(lang string) int {
+	count := 0
+	for _, w := range p.workers {
+		if w.Lang == lang {
+			count++
+		}
+	}
+	return count
+}
+
+func (p *Pool) GetWorkersStatus() map[string]interface{} {
+	status := make(map[string]interface{})
+	var workers []map[string]interface{}
+
+	for _, w := range p.workers {
+		workers = append(workers, map[string]interface{}{
+			"name":     w.ContainerName,
+			"lang":     w.Lang,
+			"endpoint": w.APIEndpoint,
+			"load":     len(w.sem),
+			"capacity": cap(w.sem),
+		})
+	}
+
+	status["workers"] = workers
+	status["total"] = len(p.workers)
+
+	return status
 }

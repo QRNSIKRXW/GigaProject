@@ -1,3 +1,4 @@
+// main.go
 package main
 
 import (
@@ -15,31 +16,58 @@ import (
 )
 
 func main() {
+	// Инициализируем Redis
 	client := internal.StartRedis()
 	defer client.Close()
 
+	// Создаем пул воркеров (3 Go, 2 Python)
 	pool, err := internal.NewPool(3, 2)
 	if err != nil {
-		log.Fatal("failed to create pool:", err)
+		log.Fatal("Failed to create pool:", err)
 	}
+
+	log.Printf("Pool created successfully: %d workers total",
+		pool.GetWorkerCount("golang")+pool.GetWorkerCount("python"))
+
+	// Создаем runner
 	runner := &internal.Runner{Pool: pool}
 
+	// Настраиваем роутер
 	r := mux.NewRouter()
 	r.Handle("/metrics", promhttp.Handler())
 	r.HandleFunc("/", internal.RunHandler(client, runner))
 
+	// Настраиваем сервер
 	srv := &http.Server{
-		Handler: r,
-		Addr:    ":9000",
+		Handler:      r,
+		Addr:         ":9000",
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  60 * time.Second,
 	}
 
-	go srv.ListenAndServe()
+	// Запускаем сервер в горутине
+	go func() {
+		log.Printf("Server starting on :9000")
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server failed: %v", err)
+		}
+	}()
 
+	// Ожидаем сигнал завершения
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
 
+	log.Println("Shutting down server...")
+
+	// Graceful shutdown
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	srv.Shutdown(ctx)
+
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Printf("Server shutdown error: %v", err)
+	}
+
+	log.Println("Server stopped")
 }

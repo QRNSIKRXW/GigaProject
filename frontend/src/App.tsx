@@ -173,14 +173,19 @@ const App: React.FC = () => {
     }
 
     ws.onmessage = (event: MessageEvent) => {
-      try {
-        const msg = JSON.parse(event.data)
-        setOutput(prev => [...prev, msg.line])
-      } catch {
-        // если пришла просто строка
-        setOutput(prev => [...prev, String(event.data)])
-      }
+  try {
+    const msg = JSON.parse(event.data)
+
+    if (typeof msg === "object" && msg.line !== undefined) {
+      setOutput(prev => [...prev, msg.line])
+    } else {
+      setOutput(prev => [...prev, String(event.data)])
     }
+
+  } catch {
+    setOutput(prev => [...prev, String(event.data)])
+  }
+}
 
     ws.onerror = () => {
       setOutput(prev => [...prev, "[websocket error]"])
