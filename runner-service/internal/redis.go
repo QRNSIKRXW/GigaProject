@@ -27,8 +27,7 @@ func StartRedis() *redis.Client {
 // Пишем в PubSub всегда с context.Background(), чтобы не зависеть от HTTP-контекста.
 func WritePubSub(client *redis.Client, middleResult string, id string) error {
 	resStruct := RedisLine{
-		TaskId: id,
-		Line:   middleResult,
+		Line: middleResult,
 	}
 
 	payload, err := json.Marshal(resStruct)

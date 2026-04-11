@@ -17,8 +17,7 @@ type RunRequest struct {
 }
 
 type RedisLine struct {
-	TaskId string `json:"taskId"`
-	Line   string `json:"line"`
+	Line string `json:"line"`
 }
 
 type RunResponse struct {

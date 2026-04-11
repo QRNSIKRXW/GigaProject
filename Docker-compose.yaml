@@ -1,3 +1,5 @@
+version: "3.9"
+
 services:
   redis:
     image: redis:7
@@ -17,21 +19,22 @@ services:
       dockerfile: Dockerfile
     container_name: runner-service
     restart: always
+    init: true
     environment:
       - REDIS_ADDR=redis:6379
       - TMP_DIR=/tmp/runner-tmp
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp/runner-tmp:/tmp/runner-tmp
-    networks:
-      - appnet
     ports:
       - "9000:9000"
     depends_on:
       - redis
+    networks:
+      - appnet
 
   # -------------------------
-  # GORUNNER POOL (множество контейнеров)
+  # GORUNNER POOL
   # -------------------------
   gorunner-0:
     build:
@@ -45,7 +48,6 @@ services:
       - /tmp:rw,size=256m,exec
     networks:
       - appnet
-    # Убираем command: ["sleep", "infinity"] - используем CMD из Dockerfile
 
   gorunner-1:
     build:
@@ -74,7 +76,7 @@ services:
       - appnet
 
   # -------------------------
-  # PYRUNNER POOL (множество контейнеров)
+  # PYRUNNER POOL
   # -------------------------
   pyrunner-0:
     build:
@@ -229,10 +231,16 @@ services:
     networks:
       - appnet
 
+# -------------------------
+# VOLUMES
+# -------------------------
 volumes:
   frontend_dist:
   grafana_data:
 
+# -------------------------
+# NETWORK
+# -------------------------
 networks:
   appnet:
     driver: bridge
