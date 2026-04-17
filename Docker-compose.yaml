@@ -1,6 +1,22 @@
-version: "3.9"
-
 services:
+  gorunner-image:
+    image: gigaproject-gorunner:local
+    build:
+      context: ./docker/go-runner
+      dockerfile: Dockerfile
+    container_name: gorunner-image-build
+    command: ["sh", "-c", "echo gorunner image built"]
+    restart: "no"
+
+  pyrunner-image:
+    image: gigaproject-pyrunner:local
+    build:
+      context: ./docker/python-runner
+      dockerfile: Dockerfile
+    container_name: pyrunner-image-build
+    command: ["sh", "-c", "echo pyrunner image built"]
+    restart: "no"
+
   redis:
     image: redis:7
     container_name: redis
@@ -23,84 +39,20 @@ services:
     environment:
       - REDIS_ADDR=redis:6379
       - TMP_DIR=/tmp/runner-tmp
+      - GO_RUNNER_COUNT=${GO_RUNNER_COUNT:-3}
+      - PY_RUNNER_COUNT=${PY_RUNNER_COUNT:-2}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp/runner-tmp:/tmp/runner-tmp
     ports:
       - "9000:9000"
     depends_on:
-      - redis
-    networks:
-      - appnet
-
-  # -------------------------
-  # GORUNNER POOL
-  # -------------------------
-  gorunner-0:
-    build:
-      context: ./docker/go-runner
-      dockerfile: Dockerfile
-    container_name: gorunner-0
-    restart: always
-    environment:
-      - LANG_TYPE=golang
-    tmpfs:
-      - /tmp:rw,size=256m,exec
-    networks:
-      - appnet
-
-  gorunner-1:
-    build:
-      context: ./docker/go-runner
-      dockerfile: Dockerfile
-    container_name: gorunner-1
-    restart: always
-    environment:
-      - LANG_TYPE=golang
-    tmpfs:
-      - /tmp:rw,size=256m,exec
-    networks:
-      - appnet
-
-  gorunner-2:
-    build:
-      context: ./docker/go-runner
-      dockerfile: Dockerfile
-    container_name: gorunner-2
-    restart: always
-    environment:
-      - LANG_TYPE=golang
-    tmpfs:
-      - /tmp:rw,size=256m,exec
-    networks:
-      - appnet
-
-  # -------------------------
-  # PYRUNNER POOL
-  # -------------------------
-  pyrunner-0:
-    build:
-      context: ./docker/python-runner
-      dockerfile: Dockerfile
-    container_name: pyrunner-0
-    restart: always
-    environment:
-      - LANG_TYPE=python
-    tmpfs:
-      - /tmp:rw,size=256m,exec
-    networks:
-      - appnet
-
-  pyrunner-1:
-    build:
-      context: ./docker/python-runner
-      dockerfile: Dockerfile
-    container_name: pyrunner-1
-    restart: always
-    environment:
-      - LANG_TYPE=python
-    tmpfs:
-      - /tmp:rw,size=256m,exec
+      gorunner-image:
+        condition: service_completed_successfully
+      pyrunner-image:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
     networks:
       - appnet
 
@@ -243,4 +195,5 @@ volumes:
 # -------------------------
 networks:
   appnet:
+    name: appnet
     driver: bridge

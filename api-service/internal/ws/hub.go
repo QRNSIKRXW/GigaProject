@@ -3,11 +3,12 @@ package ws
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
-
-	"log"
 
 	"github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
@@ -44,8 +45,22 @@ var Upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
 	CheckOrigin: func(r *http.Request) bool {
-		return true
+		return isAllowedOrigin(r)
 	},
+}
+
+func isAllowedOrigin(r *http.Request) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return true
+	}
+
+	originURL, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+
+	return strings.EqualFold(originURL.Host, r.Host)
 }
 
 func CreateHub(rdb *redis.Client) *Hub {
@@ -106,6 +121,10 @@ func (h *Hub) StartHub() {
 					default:
 						close(client.Send)
 						delete(clients, client)
+						if len(clients) == 0 {
+							delete(h.Clients, msg.taskId)
+							h.stopSubscription(msg.taskId)
+						}
 					}
 				}
 			}

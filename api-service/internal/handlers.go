@@ -3,7 +3,10 @@ package internal
 import (
 	"encoding/json"
 	"log"
+	"net"
 	"net/http"
+	"net/netip"
+	"strings"
 
 	"github.com/gorilla/mux"
 
@@ -11,14 +14,56 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+func isTrustedProxyIP(ip string) bool {
+	addr, err := netip.ParseAddr(strings.TrimSpace(ip))
+	if err != nil {
+		return false
+	}
+
+	return addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast()
+}
+
+func firstForwardedIP(value string) string {
+	for _, part := range strings.Split(value, ",") {
+		ip := strings.TrimSpace(part)
+		if ip == "" {
+			continue
+		}
+		if parsed, err := netip.ParseAddr(ip); err == nil {
+			return parsed.String()
+		}
+	}
+
+	return ""
+}
+
+func clientIPFromRequest(r *http.Request) string {
+	remoteHost := strings.TrimSpace(r.RemoteAddr)
+	if host, _, err := net.SplitHostPort(remoteHost); err == nil && host != "" {
+		remoteHost = host
+	}
+
+	// Trust forwarding headers only when request comes from local/private proxy.
+	if isTrustedProxyIP(remoteHost) {
+		if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
+			if parsed, err := netip.ParseAddr(realIP); err == nil {
+				return parsed.String()
+			}
+		}
+
+		if fwdIP := firstForwardedIP(r.Header.Get("X-Forwarded-For")); fwdIP != "" {
+			return fwdIP
+		}
+	}
+
+	return remoteHost
+}
+
 func GoRunHandler(client *redis.Client) http.HandlerFunc {
 
 	resultFunc := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
-		ip := r.Header.Get("X-Real-IP")
-		if ip == "" {
-			ip = r.RemoteAddr
-		}
+		ip := clientIPFromRequest(r)
 
 		if err := RateLimit(client, r.Context(), ip, 20); err != nil {
 
@@ -139,10 +184,7 @@ func PyRunHandler(client *redis.Client) http.HandlerFunc {
 
 	resultFunc := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
-		ip := r.Header.Get("X-Real-IP")
-		if ip == "" {
-			ip = r.RemoteAddr
-		}
+		ip := clientIPFromRequest(r)
 
 		if err := RateLimit(client, r.Context(), ip, 20); err != nil {
 
@@ -455,7 +497,7 @@ func HistoryHandler(client *redis.Client) http.HandlerFunc {
 
 		}
 
-		stop := start + int64(limit)
+		stop := start + int64(limit) - 1
 
 		tasksIdArr, err := client.LRange(ctx, "user:"+ownerId+":tasks", start, stop).Result()
 		if err != nil {
@@ -475,7 +517,7 @@ func HistoryHandler(client *redis.Client) http.HandlerFunc {
 
 		for _, val := range tasksIdArr {
 
-			data, err := client.HGetAll(ctx, val).Result()
+			data, err := client.HGetAll(ctx, "task:"+val).Result()
 			if err != nil || len(data) == 0 {
 				continue
 			}

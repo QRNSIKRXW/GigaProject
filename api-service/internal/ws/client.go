@@ -49,8 +49,6 @@ func (c *Client) readPump() {
 
 func (c *Client) writePump() {
 	defer func() {
-		// 🔥 важно: корректное закрытие канала
-		close(c.Send)
 		c.WebSocket.Close()
 	}()
 

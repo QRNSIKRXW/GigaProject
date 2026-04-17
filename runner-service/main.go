@@ -3,10 +3,13 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -15,13 +18,44 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
+func envInt(name string, fallback int) (int, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback, nil
+	}
+
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be integer, got %q", name, raw)
+	}
+	if v < 0 {
+		return 0, fmt.Errorf("%s must be >= 0, got %d", name, v)
+	}
+
+	return v, nil
+}
+
 func main() {
 	// Инициализируем Redis
 	client := internal.StartRedis()
 	defer client.Close()
 
-	// Создаем пул воркеров (3 Go, 2 Python)
-	pool, err := internal.NewPool(3, 2)
+	goRunners, err := envInt("GO_RUNNER_COUNT", 3)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	pyRunners, err := envInt("PY_RUNNER_COUNT", 2)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if goRunners+pyRunners == 0 {
+		log.Fatal("at least one runner must be configured")
+	}
+
+	// Создаем пул воркеров (по env)
+	pool, err := internal.NewPool(goRunners, pyRunners)
 	if err != nil {
 		log.Fatal("Failed to create pool:", err)
 	}

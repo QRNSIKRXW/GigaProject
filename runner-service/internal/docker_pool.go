@@ -67,42 +67,162 @@ func cleanErrorLine(line string) string {
 
 // ---------- CONTAINER START ----------
 
-func startContainer(name, image, langType string) error {
-	cmd := exec.Command("docker", "inspect", name)
-	if err := cmd.Run(); err == nil {
-		startCmd := exec.Command("docker", "start", name)
-		out, err := startCmd.CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("failed to start container %s: %v, output: %s", name, err, string(out))
-		}
-		return nil
+func inspectField(name, format string) (string, error) {
+	cmd := exec.Command("docker", "inspect", "-f", format, name)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("inspect %s failed: %v, output: %s", name, err, string(out))
 	}
 
+	return strings.TrimSpace(string(out)), nil
+}
+
+func waitRunnerReady(endpoint string, timeout time.Duration) error {
+	httpClient := &http.Client{
+		Timeout: 2 * time.Second,
+	}
+
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+
+	for time.Now().Before(deadline) {
+		req, _ := http.NewRequest(http.MethodGet, endpoint, nil)
+
+		resp, err := httpClient.Do(req)
+		if err == nil {
+			resp.Body.Close()
+			return nil
+		}
+
+		lastErr = err
+		time.Sleep(250 * time.Millisecond)
+	}
+
+	if lastErr == nil {
+		lastErr = fmt.Errorf("timeout")
+	}
+
+	return fmt.Errorf("runner %s not ready: %w", endpoint, lastErr)
+}
+
+func removeContainer(name string) error {
+	cmd := exec.Command("docker", "rm", "-f", name)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to remove container %s: %v, output: %s", name, err, string(out))
+	}
+	return nil
+}
+
+func runNewContainer(name, image, langType string) error {
 	run := exec.Command(
 		"docker", "run", "-d",
 		"--name", name,
 		"--network=appnet",
-
-		"--memory=128m",
-		"--memory-swap=128m",
-		"--cpus=0.3",
-		"--pids-limit=64",
-
+		"--memory=512m",
+		"--memory-swap=512m",
+		"--cpus=1.0",
+		"--pids-limit=256",
 		"--read-only",
-		"--tmpfs", "/tmp:rw,size=64m",
+		"--tmpfs", "/tmp:rw,exec,size=64m",
 		"--security-opt=no-new-privileges",
 		"--cap-drop=ALL",
-
 		"-e", fmt.Sprintf("LANG_TYPE=%s", langType),
+		"-e", "HOME=/tmp",
+		"-e", "XDG_CACHE_HOME=/tmp/.cache",
+		"-e", "GOCACHE=/tmp/.cache/go-build",
+		"-e", "GOMODCACHE=/tmp/.cache/go-mod",
 		image,
 	)
 
-	out, err := run.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("failed to run container %s: %v, output: %s", name, err, string(out))
+	runOut, runErr := run.CombinedOutput()
+	if runErr != nil {
+		return fmt.Errorf("failed to run container %s: %v, output: %s", name, runErr, string(runOut))
 	}
 
-	time.Sleep(1 * time.Second)
+	return nil
+}
+
+func startExistingContainer(name string) error {
+	startCmd := exec.Command("docker", "start", name)
+	startOut, startErr := startCmd.CombinedOutput()
+	if startErr != nil {
+		return fmt.Errorf("failed to start container %s: %v, output: %s", name, startErr, string(startOut))
+	}
+	return nil
+}
+
+func restartExistingContainer(name string) error {
+	restartCmd := exec.Command("docker", "restart", name)
+	restartOut, restartErr := restartCmd.CombinedOutput()
+	if restartErr != nil {
+		return fmt.Errorf("failed to restart container %s: %v, output: %s", name, restartErr, string(restartOut))
+	}
+	return nil
+}
+
+func startContainer(name, image, langType string) error {
+	endpoint := fmt.Sprintf("http://%s:8080/exec", name)
+
+	currentImage, imageErr := inspectField(name, "{{.Config.Image}}")
+	if imageErr != nil {
+		if err := runNewContainer(name, image, langType); err != nil {
+			return err
+		}
+		return waitRunnerReady(endpoint, 20*time.Second)
+	}
+
+	if currentImage != image {
+		if err := removeContainer(name); err != nil {
+			return err
+		}
+		if err := runNewContainer(name, image, langType); err != nil {
+			return err
+		}
+		return waitRunnerReady(endpoint, 20*time.Second)
+	}
+
+	running, err := inspectField(name, "{{.State.Running}}")
+	if err != nil {
+		return err
+	}
+
+	if running == "true" {
+		if err := waitRunnerReady(endpoint, 15*time.Second); err == nil {
+			return nil
+		}
+
+		// Running container exists, but API is not healthy. Try soft restart once.
+		if err := restartExistingContainer(name); err == nil {
+			if err := waitRunnerReady(endpoint, 20*time.Second); err == nil {
+				return nil
+			}
+		}
+
+		// Fallback: recreate container.
+		if err := removeContainer(name); err != nil {
+			return err
+		}
+		if err := runNewContainer(name, image, langType); err != nil {
+			return err
+		}
+		return waitRunnerReady(endpoint, 20*time.Second)
+	}
+
+	if err := startExistingContainer(name); err != nil {
+		return err
+	}
+
+	if err := waitRunnerReady(endpoint, 20*time.Second); err != nil {
+		if err := removeContainer(name); err != nil {
+			return err
+		}
+		if err := runNewContainer(name, image, langType); err != nil {
+			return err
+		}
+		return waitRunnerReady(endpoint, 20*time.Second)
+	}
+
 	return nil
 }
 
@@ -120,7 +240,7 @@ func NewPool(numGo, numPy int) (*Pool, error) {
 	for i := 0; i < numGo; i++ {
 		name := fmt.Sprintf("gorunner-%d", i)
 
-		if err := startContainer(name, "gorunner", "golang"); err != nil {
+		if err := startContainer(name, "gigaproject-gorunner:local", "golang"); err != nil {
 			return nil, err
 		}
 
@@ -136,7 +256,7 @@ func NewPool(numGo, numPy int) (*Pool, error) {
 	for i := 0; i < numPy; i++ {
 		name := fmt.Sprintf("pyrunner-%d", i)
 
-		if err := startContainer(name, "pyrunner", "python"); err != nil {
+		if err := startContainer(name, "gigaproject-pyrunner:local", "python"); err != nil {
 			return nil, err
 		}
 
@@ -205,6 +325,13 @@ func (p *Pool) RunCodeWithLogs(
 		return "error", fmt.Errorf("no worker available")
 	}
 
+	select {
+	case worker.sem <- struct{}{}:
+		defer func() { <-worker.sem }()
+	case <-ctx.Done():
+		return "error", ctx.Err()
+	}
+
 	reqBody, _ := json.Marshal(map[string]string{
 		"code": code,
 	})
@@ -243,7 +370,9 @@ func (p *Pool) RunCodeWithLogs(
 			}
 
 			hadOutput = true
-			WritePubSub(client, msg, "task:"+sessionID+":out")
+			if err := WritePubSub(client, msg, "task:"+sessionID+":out"); err != nil {
+				return "error", err
+			}
 
 		case strings.HasPrefix(line, "ERR:"):
 			msg := strings.TrimPrefix(line, "ERR:")
@@ -254,7 +383,9 @@ func (p *Pool) RunCodeWithLogs(
 			}
 
 			errorCount++
-			WritePubSub(client, msg, "task:"+sessionID+":err")
+			if err := WritePubSub(client, msg, "task:"+sessionID+":err"); err != nil {
+				return "error", err
+			}
 
 		case line == "END":
 			if hadOutput {

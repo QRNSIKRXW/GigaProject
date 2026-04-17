@@ -39,7 +39,7 @@ func WritePubSub(client *redis.Client, middleResult string, id string) error {
 
 	var lastErr error
 	for i := 0; i < 4; i++ {
-		log.Printf("Attempting to publish to channel task:%s: %s", id, payload)
+		log.Printf("Attempting to publish to channel %s: %s", id, payload)
 		err = client.Publish(ctx, id, payload).Err()
 		if err == nil {
 			return nil

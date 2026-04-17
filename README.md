@@ -125,7 +125,7 @@
         │         DOCKER CONTAINERS                   │
         │  ┌─────────────────────────────────────┐   │
         │  │  gorunner image                     │   │
-        │  │  - Isolated (--network none)        │   │
+        │  │  - Isolated (internal app network)  │   │
         │  │  - No capabilities (--cap-drop ALL) │   │
         │  │  - Limited: 128MB RAM, 0.5 CPUs     │   │
         │  │  - Timeout: 3 seconds               │   │
@@ -272,7 +272,7 @@ curl -X POST http://localhost/api/run/go \
 
 **Docker constraints**:
 ```
---network none              # Нет сети
+--network appnet            # Сеть compose между сервисами
 --memory 128m               # Макс 128 MB RAM
 --cpus 0.5                  # Max 50% CPU
 --cap-drop ALL              # Нет Linux capabilities
@@ -505,6 +505,19 @@ docker-compose logs -f
 docker-compose ps
 ```
 
+Масштаб runner-контейнеров задаётся без правки compose:
+
+```bash
+GO_RUNNER_COUNT=4 PY_RUNNER_COUNT=3 docker-compose up -d
+```
+
+или через `.env`:
+
+```env
+GO_RUNNER_COUNT=4
+PY_RUNNER_COUNT=3
+```
+
 **Порты**:
 - `80` – nginx (frontend + API)
 - `8000` – api-service напрямую (для отладки)
@@ -532,6 +545,8 @@ docker-compose ps
 |----------|---------|---------|---------|
 | `REDIS_ADDR` | go-worker, py-worker, api-service, runner-service | `redis:6379` | Redis адрес |
 | `RUNNER_URL` | go-worker, py-worker | `http://host.docker.internal:9000` | URL runner-service |
+| `GO_RUNNER_COUNT` | runner-service | `3` | Количество Go runner-контейнеров (`gorunner-0..N`) |
+| `PY_RUNNER_COUNT` | runner-service | `2` | Количество Python runner-контейнеров (`pyrunner-0..N`) |
 
 ### Hardcoded параметры (нужна конфигурация)
 
@@ -552,7 +567,7 @@ docker-compose ps
 ### Песочница
 
 ✅ **Включено**:
-- Docker isolation (--network none)
+- Docker isolation (Docker network + container restrictions)
 - Капабилитис дропнуты (--cap-drop ALL)
 - Таймаут 3 сек (жёсткий лимит time)
 - Ограничение памяти (128 MB)
@@ -571,7 +586,7 @@ docker-compose ps
 ⚠️ **Отсутствует**:
 - ❌ HTTPS/TLS
 - ❌ Аутентификация (только UUID cookie)
-- ❌ CORS проверка (CheckOrigin: true)
+- ❌ Полноценная CORS-политика для внешних origin (разрешён только same-origin WebSocket)
 
 ✅ **Добавлено**:
 - Rate limiting по IP

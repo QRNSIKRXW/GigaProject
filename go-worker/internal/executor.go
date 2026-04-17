@@ -88,7 +88,9 @@ func ExecuteTask(client *redis.Client, task Task) (result TaskStatus) {
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 
-	sub := client.Subscribe(ctx, "task:"+task.Id)
+	outCh := "task:" + task.Id + ":out"
+	errCh := "task:" + task.Id + ":err"
+	sub := client.Subscribe(ctx, outCh, errCh)
 
 	// 🔥 ВАЖНО: дождаться подтверждения подписки
 	_, err := sub.Receive(ctx)
@@ -119,10 +121,6 @@ func ExecuteTask(client *redis.Client, task Task) (result TaskStatus) {
 
 				var line RedisLine
 				if err := json.Unmarshal([]byte(msg.Payload), &line); err != nil {
-					continue
-				}
-
-				if line.TaskId != task.Id {
 					continue
 				}
 
@@ -167,7 +165,13 @@ func ExecuteTask(client *redis.Client, task Task) (result TaskStatus) {
 	log.Println("Post successful")
 
 	var runRes RunResponse
-	json.NewDecoder(resp.Body).Decode(&runRes)
+	if err := json.NewDecoder(resp.Body).Decode(&runRes); err != nil {
+		executorTasksFailed.Inc()
+		return TaskStatus{
+			Status: "error",
+			Error:  "invalid runner response",
+		}
+	}
 
 	// 🔥 корректное завершение
 	sub.Close()
@@ -186,22 +190,31 @@ func ExecuteTask(client *redis.Client, task Task) (result TaskStatus) {
 		log.Println("timeout waiting pubsub reader")
 	}
 
+	output := strings.TrimRight(buffer.String(), "\n")
+
 	if runRes.Status == "error" {
 		executorTasksFailed.Inc()
+
+		if output != "" {
+			errLine := extractErrorLine(output)
+			if errLine == "" {
+				errLine = output
+			}
+			return TaskStatus{
+				Status: "failed",
+				Result: output,
+				Error:  errLine,
+			}
+		}
+
+		errMsg := runRes.Error
+		if errMsg == "" {
+			errMsg = "execution failed"
+		}
+
 		return TaskStatus{
 			Status: "error",
-			Error:  runRes.Error,
-		}
-	}
-
-	output := buffer.String()
-
-	if containsUserError(output) {
-		executorTasksFailed.Inc()
-		return TaskStatus{
-			Status: "failed",
-			Result: output,
-			Error:  extractErrorLine(output),
+			Error:  errMsg,
 		}
 	}
 
@@ -211,12 +224,6 @@ func ExecuteTask(client *redis.Client, task Task) (result TaskStatus) {
 		Status: "done",
 		Result: output,
 	}
-}
-
-func containsUserError(out string) bool {
-	return strings.Contains(out, "panic") ||
-		strings.Contains(out, "Traceback") ||
-		strings.Contains(out, "error:")
 }
 
 func extractErrorLine(out string) string {

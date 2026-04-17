@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react"
+import React, { useEffect, useMemo, useRef, useState } from "react"
 
 type Lang = "golang" | "python"
 
@@ -10,7 +10,8 @@ interface HistoryItem {
 }
 
 const API_BASE = "/api"
-const WS_URL = `ws://${location.host}/ws`
+const WS_PROTOCOL = location.protocol === "https:" ? "wss" : "ws"
+const WS_URL = `${WS_PROTOCOL}://${location.host}/ws`
 
 const defaultGo = `package main
 
@@ -31,6 +32,8 @@ const App: React.FC = () => {
   const [taskId, setTaskId] = useState<string>("")
   const [history, setHistory] = useState<HistoryItem[]>([])
   const [activeHistoryId, setActiveHistoryId] = useState<string | null>(null)
+  const wsRef = useRef<WebSocket | null>(null)
+  const pollTimerRef = useRef<number | null>(null)
 
   useEffect(() => {
     const raw = localStorage.getItem("runner_history")
@@ -39,6 +42,18 @@ const App: React.FC = () => {
       const parsed: HistoryItem[] = JSON.parse(raw)
       setHistory(parsed)
     } catch {}
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (pollTimerRef.current !== null) {
+        clearTimeout(pollTimerRef.current)
+      }
+      if (wsRef.current) {
+        wsRef.current.close()
+        wsRef.current = null
+      }
+    }
   }, [])
 
   const saveHistory = (items: HistoryItem[]) => {
@@ -97,7 +112,20 @@ const App: React.FC = () => {
         const error: string = data.error ?? ""
 
         if (status === "done") {
+          if (result.trim()) {
+            setOutput(prev => {
+              if (prev.length > 0) return prev
+              return result
+                .split("\n")
+                .map(line => line.trimEnd())
+                .filter(line => line.length > 0)
+            })
+          }
           setIsRunning(false)
+          if (wsRef.current) {
+            wsRef.current.close()
+            wsRef.current = null
+          }
           return
         }
 
@@ -107,14 +135,22 @@ const App: React.FC = () => {
             setOutput(prev => [...prev, "---", `[error] ${error}`])
           }
           setIsRunning(false)
+          if (wsRef.current) {
+            wsRef.current.close()
+            wsRef.current = null
+          }
           return
         }
 
         // pending — повторяем через 500 мс
-        setTimeout(check, 500)
+        pollTimerRef.current = window.setTimeout(check, 500)
       } catch (e) {
         setOutput(prev => [...prev, "[status request error]"])
         setIsRunning(false)
+        if (wsRef.current) {
+          wsRef.current.close()
+          wsRef.current = null
+        }
       }
     }
 
@@ -127,6 +163,14 @@ const App: React.FC = () => {
   setIsRunning(true)
   setOutput([])
   setActiveHistoryId(null)
+  if (pollTimerRef.current !== null) {
+    clearTimeout(pollTimerRef.current)
+    pollTimerRef.current = null
+  }
+  if (wsRef.current) {
+    wsRef.current.close()
+    wsRef.current = null
+  }
 
   try {
     const runUrl =
@@ -164,6 +208,7 @@ const App: React.FC = () => {
 
     // === WebSocket ===
     const ws = new WebSocket(WS_URL)
+    wsRef.current = ws
 
     ws.onopen = () => {
       ws.send(JSON.stringify({
@@ -189,6 +234,12 @@ const App: React.FC = () => {
 
     ws.onerror = () => {
       setOutput(prev => [...prev, "[websocket error]"])
+    }
+
+    ws.onclose = () => {
+      if (wsRef.current === ws) {
+        wsRef.current = null
+      }
     }
 
     // === Статус ===

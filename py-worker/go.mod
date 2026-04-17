@@ -1,4 +1,4 @@
-module github.com/QRNSIKRXW/GigaProject/go-worker
+module github.com/QRNSIKRXW/GigaProject/py-worker
 
 go 1.25.5
 

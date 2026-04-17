@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/QRNSIKRXW/GigaProject/api-service/internal"
 	"github.com/QRNSIKRXW/GigaProject/api-service/internal/ws"
@@ -18,8 +19,6 @@ func main() {
 
 	client := internal.StartRedis()
 	defer client.Close()
-
-	ctx, cancel := context.WithCancel(context.Background())
 
 	hub := ws.CreateHub(client)
 	go hub.StartHub()
@@ -62,8 +61,11 @@ func main() {
 
 	<-done
 	log.Printf("shutting down")
-	cancel()
-	srv.Shutdown(ctx)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("http shutdown error: %v", err)
+	}
 	hub.Shutdown()
 
 }
