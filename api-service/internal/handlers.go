@@ -62,10 +62,12 @@ func clientIPFromRequest(r *http.Request) string {
 func GoRunHandler(client *redis.Client) http.HandlerFunc {
 
 	resultFunc := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lang := "golang"
 
 		ip := clientIPFromRequest(r)
 
 		if err := RateLimit(client, r.Context(), ip, 20); err != nil {
+			apiRunRequestsTotal.WithLabelValues(lang, "rate_limited").Inc()
 
 			log.Println(err)
 			w.Header().Set("Content-Type", "application/json")
@@ -79,6 +81,7 @@ func GoRunHandler(client *redis.Client) http.HandlerFunc {
 		}
 
 		if r.Method != http.MethodPost {
+			apiRunRequestsTotal.WithLabelValues(lang, "method_not_allowed").Inc()
 
 			log.Println("wrong method")
 			w.Header().Set("Content-Type", "application/json")
@@ -95,6 +98,7 @@ func GoRunHandler(client *redis.Client) http.HandlerFunc {
 
 		err := json.NewDecoder(r.Body).Decode(&req)
 		if err != nil {
+			apiRunRequestsTotal.WithLabelValues(lang, "invalid_json").Inc()
 
 			log.Println("Decode error", err.Error())
 			w.Header().Set("Content-Type", "application/json")
@@ -108,6 +112,8 @@ func GoRunHandler(client *redis.Client) http.HandlerFunc {
 		}
 
 		if len(req.Code) > MaxCodeSize {
+			apiRunCodeSizeBytes.WithLabelValues(lang).Observe(float64(len(req.Code)))
+			apiRunRequestsTotal.WithLabelValues(lang, "code_too_large").Inc()
 			log.Println("Code too large:", len(req.Code))
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusRequestEntityTooLarge)
@@ -139,7 +145,8 @@ func GoRunHandler(client *redis.Client) http.HandlerFunc {
 		req.Id = taskId
 		log.Println("RUN HANDLER: created taskId:", taskId)
 		req.OwnerId = ownerId
-		req.Lang = "golang"
+		req.Lang = lang
+		apiRunCodeSizeBytes.WithLabelValues(lang).Observe(float64(len(req.Code)))
 
 		res := RunResponse{
 			Id: taskId,
@@ -149,6 +156,8 @@ func GoRunHandler(client *redis.Client) http.HandlerFunc {
 
 		err = PushTask(req, client, ctx, "tasks:go")
 		if err != nil {
+			apiTaskEnqueueErrorsTotal.WithLabelValues(lang).Inc()
+			apiRunRequestsTotal.WithLabelValues(lang, "enqueue_error").Inc()
 			log.Println("PusTask error", err.Error())
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)
@@ -162,8 +171,10 @@ func GoRunHandler(client *redis.Client) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 
 		w.WriteHeader(http.StatusOK)
+		apiRunRequestsTotal.WithLabelValues(lang, "accepted").Inc()
 		err = json.NewEncoder(w).Encode(res)
 		if err != nil {
+			apiRunRequestsTotal.WithLabelValues(lang, "response_encode_error").Inc()
 			log.Println("error", err)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)
@@ -183,10 +194,12 @@ func GoRunHandler(client *redis.Client) http.HandlerFunc {
 func PyRunHandler(client *redis.Client) http.HandlerFunc {
 
 	resultFunc := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lang := "python"
 
 		ip := clientIPFromRequest(r)
 
 		if err := RateLimit(client, r.Context(), ip, 20); err != nil {
+			apiRunRequestsTotal.WithLabelValues(lang, "rate_limited").Inc()
 
 			log.Println(err)
 			w.Header().Set("Content-Type", "application/json")
@@ -200,6 +213,7 @@ func PyRunHandler(client *redis.Client) http.HandlerFunc {
 		}
 
 		if r.Method != http.MethodPost {
+			apiRunRequestsTotal.WithLabelValues(lang, "method_not_allowed").Inc()
 
 			log.Println("wrong method")
 			w.Header().Set("Content-Type", "application/json")
@@ -216,6 +230,7 @@ func PyRunHandler(client *redis.Client) http.HandlerFunc {
 
 		err := json.NewDecoder(r.Body).Decode(&req)
 		if err != nil {
+			apiRunRequestsTotal.WithLabelValues(lang, "invalid_json").Inc()
 
 			log.Println("Decode error", err.Error())
 			w.Header().Set("Content-Type", "application/json")
@@ -229,6 +244,8 @@ func PyRunHandler(client *redis.Client) http.HandlerFunc {
 		}
 
 		if len(req.Code) > MaxCodeSize {
+			apiRunCodeSizeBytes.WithLabelValues(lang).Observe(float64(len(req.Code)))
+			apiRunRequestsTotal.WithLabelValues(lang, "code_too_large").Inc()
 			log.Println("Code too large:", len(req.Code))
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusRequestEntityTooLarge)
@@ -260,7 +277,8 @@ func PyRunHandler(client *redis.Client) http.HandlerFunc {
 		req.Id = taskId
 		log.Println("RUN HANDLER: created taskId:", taskId)
 		req.OwnerId = ownerId
-		req.Lang = "python"
+		req.Lang = lang
+		apiRunCodeSizeBytes.WithLabelValues(lang).Observe(float64(len(req.Code)))
 
 		res := RunResponse{
 			Id: taskId,
@@ -270,6 +288,8 @@ func PyRunHandler(client *redis.Client) http.HandlerFunc {
 
 		err = PushTask(req, client, ctx, "tasks:python")
 		if err != nil {
+			apiTaskEnqueueErrorsTotal.WithLabelValues(lang).Inc()
+			apiRunRequestsTotal.WithLabelValues(lang, "enqueue_error").Inc()
 			log.Println("PusTask error", err.Error())
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)
@@ -283,8 +303,10 @@ func PyRunHandler(client *redis.Client) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 
 		w.WriteHeader(http.StatusOK)
+		apiRunRequestsTotal.WithLabelValues(lang, "accepted").Inc()
 		err = json.NewEncoder(w).Encode(res)
 		if err != nil {
+			apiRunRequestsTotal.WithLabelValues(lang, "response_encode_error").Inc()
 			log.Println("error", err)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)

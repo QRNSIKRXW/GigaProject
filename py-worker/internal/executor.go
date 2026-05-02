@@ -8,10 +8,54 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
 )
 
+var (
+	pyExecutorTasksTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "py_executor_tasks_total",
+		Help: "Total number of python tasks processed",
+	})
+
+	pyExecutorTasksFailed = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "py_executor_tasks_failed_total",
+		Help: "Total number of failed python tasks",
+	})
+
+	pyExecutorTasksSuccess = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "py_executor_tasks_success_total",
+		Help: "Total number of successful python tasks",
+	})
+
+	pyExecutorTaskDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "py_executor_task_duration_seconds",
+		Help:    "Python task execution duration",
+		Buckets: prometheus.DefBuckets,
+	})
+
+	pyExecutorRunnerErrors = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "py_executor_runner_errors_total",
+		Help: "Runner communication errors in python worker",
+	})
+)
+
+func init() {
+	prometheus.MustRegister(
+		pyExecutorTasksTotal,
+		pyExecutorTasksFailed,
+		pyExecutorTasksSuccess,
+		pyExecutorTaskDuration,
+		pyExecutorRunnerErrors,
+	)
+}
+
 func ExecuteTask(client *redis.Client, task Task) (result TaskStatus) {
+	start := time.Now()
+	pyExecutorTasksTotal.Inc()
+	defer func() {
+		pyExecutorTaskDuration.Observe(time.Since(start).Seconds())
+	}()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -50,6 +94,8 @@ func ExecuteTask(client *redis.Client, task Task) (result TaskStatus) {
 
 	resp, err := http.Post("http://runner-service:9000/", "application/json", bytes.NewBuffer(body))
 	if err != nil {
+		pyExecutorRunnerErrors.Inc()
+		pyExecutorTasksFailed.Inc()
 		result.Status = "error"
 		result.Error = "internal error"
 		result.Result = ""
@@ -63,6 +109,7 @@ func ExecuteTask(client *redis.Client, task Task) (result TaskStatus) {
 	var runRes RunResponse
 	json.NewDecoder(resp.Body).Decode(&runRes)
 	if runRes.Status == "error" {
+		pyExecutorTasksFailed.Inc()
 		return TaskStatus{
 			Status: "error",
 			Result: "",
@@ -73,6 +120,7 @@ func ExecuteTask(client *redis.Client, task Task) (result TaskStatus) {
 	output := buffer.String()
 
 	if containsUserError(output) {
+		pyExecutorTasksFailed.Inc()
 		codeErr := extractErrorLine(output)
 		return TaskStatus{
 			Status: "failed",
@@ -81,6 +129,7 @@ func ExecuteTask(client *redis.Client, task Task) (result TaskStatus) {
 		}
 	}
 
+	pyExecutorTasksSuccess.Inc()
 	return TaskStatus{
 		Status: "done",
 		Result: output,
