@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -293,9 +294,9 @@ func claimAndExecute(worker *Worker, ctx context.Context, recoverIdArr []string)
 		result := ExecuteTask(worker.client, task)
 
 		if result.Status == "done" {
-			worker.processed++
+			atomic.AddInt64(&worker.processed, 1)
 		} else {
-			worker.failed++
+			atomic.AddInt64(&worker.failed, 1)
 		}
 
 		err = WriteResult(worker.client, ctx, result, task.Id)

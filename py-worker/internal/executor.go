@@ -4,13 +4,20 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
 )
+
+var pyRunnerHTTPClient = &http.Client{
+	Timeout: 30 * time.Second,
+}
 
 var (
 	pyExecutorTasksTotal = prometheus.NewCounter(prometheus.CounterOpts{
@@ -57,31 +64,44 @@ func ExecuteTask(client *redis.Client, task Task) (result TaskStatus) {
 		pyExecutorTaskDuration.Observe(time.Since(start).Seconds())
 	}()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 
-	sub := client.Subscribe(ctx, "task:"+task.Id)
+	outCh := "task:" + task.Id + ":out"
+	errCh := "task:" + task.Id + ":err"
+	sub := client.Subscribe(ctx, outCh, errCh)
+	_, subErr := sub.Receive(ctx)
+	if subErr != nil {
+		pyExecutorRunnerErrors.Inc()
+		pyExecutorTasksFailed.Inc()
+		return TaskStatus{
+			Status: "error",
+			Error:  "pubsub subscribe failed",
+		}
+	}
 	ch := sub.Channel()
 
 	buffer := NewLimitedBuffer(1_000_000)
+	var wg sync.WaitGroup
+	wg.Add(1)
 
 	go func() {
-
-		for msg := range ch {
-
-			var line RedisLine
-			if err := json.Unmarshal([]byte(msg.Payload), &line); err != nil {
-				continue
+		defer wg.Done()
+		for {
+			select {
+			case msg, ok := <-ch:
+				if !ok {
+					return
+				}
+				var line RedisLine
+				if err := json.Unmarshal([]byte(msg.Payload), &line); err != nil {
+					continue
+				}
+				buffer.Write([]byte(line.Line + "\n"))
+			case <-ctx.Done():
+				return
 			}
-
-			if line.TaskId != task.Id {
-				continue
-			}
-
-			buffer.Write([]byte(line.Line + "\n"))
-
 		}
-
 	}()
 
 	req := RunRequest{
@@ -92,7 +112,18 @@ func ExecuteTask(client *redis.Client, task Task) (result TaskStatus) {
 
 	body, _ := json.Marshal(req)
 
-	resp, err := http.Post("http://runner-service:9000/", "application/json", bytes.NewBuffer(body))
+	reqHTTP, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://runner-service:9000/", bytes.NewBuffer(body))
+	if err != nil {
+		pyExecutorRunnerErrors.Inc()
+		pyExecutorTasksFailed.Inc()
+		result.Status = "error"
+		result.Error = "internal error"
+		result.Result = ""
+		return result
+	}
+	reqHTTP.Header.Set("Content-Type", "application/json")
+
+	resp, err := pyRunnerHTTPClient.Do(reqHTTP)
 	if err != nil {
 		pyExecutorRunnerErrors.Inc()
 		pyExecutorTasksFailed.Inc()
@@ -103,29 +134,45 @@ func ExecuteTask(client *redis.Client, task Task) (result TaskStatus) {
 	}
 	defer resp.Body.Close()
 
+	var runRes RunResponse
+	if err := json.NewDecoder(resp.Body).Decode(&runRes); err != nil {
+		pyExecutorTasksFailed.Inc()
+		return TaskStatus{
+			Status: "error",
+			Error:  "invalid runner response",
+		}
+	}
+
 	sub.Close()
 	cancel()
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		log.Println("timeout waiting pubsub reader")
+	}
 
-	var runRes RunResponse
-	json.NewDecoder(resp.Body).Decode(&runRes)
+	output := strings.TrimRight(buffer.String(), "\n")
+
 	if runRes.Status == "error" {
 		pyExecutorTasksFailed.Inc()
+
+		if output != "" {
+			return TaskStatus{
+				Status: "failed",
+				Result: output,
+				Error:  extractErrorLine(output),
+			}
+		}
+
 		return TaskStatus{
 			Status: "error",
 			Result: "",
 			Error:  runRes.Error,
-		}
-	}
-
-	output := buffer.String()
-
-	if containsUserError(output) {
-		pyExecutorTasksFailed.Inc()
-		codeErr := extractErrorLine(output)
-		return TaskStatus{
-			Status: "failed",
-			Result: output,
-			Error:  codeErr,
 		}
 	}
 
@@ -212,9 +259,9 @@ func claimAndExecute(worker *Worker, ctx context.Context, recoverIdArr []string)
 		result := ExecuteTask(worker.client, task)
 
 		if result.Status == "done" {
-			worker.processed++
+			atomic.AddInt64(&worker.processed, 1)
 		} else {
-			worker.failed++
+			atomic.AddInt64(&worker.failed, 1)
 		}
 
 		err = WriteResult(worker.client, ctx, result, task.Id)

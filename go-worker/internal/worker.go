@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -34,9 +35,9 @@ func (worker *Worker) mainLoop(ctx context.Context) {
 
 		result := ExecuteTask(worker.client, task)
 		if result.Status == "done" {
-			worker.processed++
+			atomic.AddInt64(&worker.processed, 1)
 		} else {
-			worker.failed++
+			atomic.AddInt64(&worker.failed, 1)
 		}
 		log.Printf("execute task succsessful")
 
@@ -97,7 +98,7 @@ func (worker *Worker) recoveryLoop(ctx context.Context) {
 
 				}
 
-				worker.dead++
+				atomic.AddInt64(&worker.dead, 1)
 
 				worker.client.XAck(ctx, worker.stream, worker.group, val.MsgId)
 				continue
@@ -181,9 +182,9 @@ func (worker *Worker) heartBeatLoop(ctx context.Context) {
 			worker.client.HSet(ctx, "worker:"+worker.consumerID, map[string]interface{}{
 				"status":         "online",
 				"last_heartbeat": time.Now().Unix(),
-				"processed":      worker.processed,
-				"failed":         worker.failed,
-				"dead":           worker.dead,
+				"processed":      atomic.LoadInt64(&worker.processed),
+				"failed":         atomic.LoadInt64(&worker.failed),
+				"dead":           atomic.LoadInt64(&worker.dead),
 			})
 
 			worker.client.Expire(ctx, "worker:"+worker.consumerID, 30*time.Second)

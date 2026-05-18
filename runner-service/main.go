@@ -60,8 +60,12 @@ func main() {
 		log.Fatal("Failed to create pool:", err)
 	}
 
-	log.Printf("Pool created successfully: %d workers total",
-		pool.GetWorkerCount("golang")+pool.GetWorkerCount("python"))
+	log.Printf(
+		"Pool created successfully: go=%d python=%d total=%d",
+		pool.GetWorkerCount("golang"),
+		pool.GetWorkerCount("python"),
+		pool.GetWorkerCount("golang")+pool.GetWorkerCount("python"),
+	)
 
 	// Создаем runner
 	runner := &internal.Runner{Pool: pool}

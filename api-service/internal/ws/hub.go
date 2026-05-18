@@ -103,6 +103,7 @@ func (h *Hub) StartHub() {
 			if clients, ok := h.Clients[client.TaskId]; ok {
 
 				delete(clients, client)
+				client.closeSend()
 
 				if len(clients) == 0 {
 					delete(h.Clients, client.TaskId)
@@ -119,7 +120,7 @@ func (h *Hub) StartHub() {
 					select {
 					case client.Send <- msg.data:
 					default:
-						close(client.Send)
+						client.closeSend()
 						delete(clients, client)
 						if len(clients) == 0 {
 							delete(h.Clients, msg.taskId)

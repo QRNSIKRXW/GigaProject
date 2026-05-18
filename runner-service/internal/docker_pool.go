@@ -345,6 +345,15 @@ func (p *Pool) RunCodeWithLogs(
 
 	resp, err := worker.HttpClient.Do(req)
 	if err != nil {
+		if recoverErr := recoverWorker(worker); recoverErr == nil {
+			reqRetry, reqErr := http.NewRequestWithContext(ctx, "POST", worker.APIEndpoint, bytes.NewReader(reqBody))
+			if reqErr == nil {
+				reqRetry.Header.Set("Content-Type", "application/json")
+				resp, err = worker.HttpClient.Do(reqRetry)
+			}
+		}
+	}
+	if err != nil {
 		return "error", err
 	}
 	defer resp.Body.Close()
@@ -406,6 +415,17 @@ func (p *Pool) RunCodeWithLogs(
 	}
 
 	return "error", fmt.Errorf("unexpected end")
+}
+
+func recoverWorker(worker *Worker) error {
+	image := "gigaproject-pyrunner:local"
+	langType := "python"
+	if worker.Lang == "golang" {
+		image = "gigaproject-gorunner:local"
+		langType = "golang"
+	}
+
+	return startContainer(worker.ContainerName, image, langType)
 }
 
 // ---------- WORKER SELECTION ----------

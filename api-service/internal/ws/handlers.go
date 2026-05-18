@@ -7,6 +7,11 @@ import (
 
 func ConnectionHandler(hub *Hub) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ownerCookie, err := r.Cookie("owner")
+		if err != nil || ownerCookie.Value == "" {
+			http.Error(w, "missing owner cookie", http.StatusUnauthorized)
+			return
+		}
 
 		wsConn, err := Upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -18,6 +23,7 @@ func ConnectionHandler(hub *Hub) http.HandlerFunc {
 			Hub:       hub,
 			WebSocket: wsConn,
 			Send:      make(chan []byte, 32),
+			OwnerID:   ownerCookie.Value,
 		}
 
 		// 🔥 важно: НЕ регистрируем тут

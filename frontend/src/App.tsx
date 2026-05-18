@@ -33,6 +33,7 @@ const App: React.FC = () => {
   const [history, setHistory] = useState<HistoryItem[]>([])
   const [activeHistoryId, setActiveHistoryId] = useState<string | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
+  const wsExpectedCloseRef = useRef(false)
   const pollTimerRef = useRef<number | null>(null)
 
   useEffect(() => {
@@ -50,6 +51,7 @@ const App: React.FC = () => {
         clearTimeout(pollTimerRef.current)
       }
       if (wsRef.current) {
+        wsExpectedCloseRef.current = true
         wsRef.current.close()
         wsRef.current = null
       }
@@ -113,16 +115,27 @@ const App: React.FC = () => {
 
         if (status === "done") {
           if (result.trim()) {
+            const resultLines = result
+              .split("\n")
+              .map(line => line.trimEnd())
+              .filter(line => line.length > 0)
+
             setOutput(prev => {
-              if (prev.length > 0) return prev
-              return result
-                .split("\n")
-                .map(line => line.trimEnd())
-                .filter(line => line.length > 0)
+              const hasUserOutput = prev.some(
+                line => line.trim().length > 0 && !line.startsWith("[")
+              )
+
+              // If we only have diagnostic websocket/status lines, replace with
+              // canonical result from API to avoid lost output.
+              if (!hasUserOutput) return resultLines
+
+              // If user output exists, keep it as-is.
+              return prev
             })
           }
           setIsRunning(false)
           if (wsRef.current) {
+            wsExpectedCloseRef.current = true
             wsRef.current.close()
             wsRef.current = null
           }
@@ -136,6 +149,7 @@ const App: React.FC = () => {
           }
           setIsRunning(false)
           if (wsRef.current) {
+            wsExpectedCloseRef.current = true
             wsRef.current.close()
             wsRef.current = null
           }
@@ -148,6 +162,7 @@ const App: React.FC = () => {
         setOutput(prev => [...prev, "[status request error]"])
         setIsRunning(false)
         if (wsRef.current) {
+          wsExpectedCloseRef.current = true
           wsRef.current.close()
           wsRef.current = null
         }
@@ -168,6 +183,7 @@ const App: React.FC = () => {
     pollTimerRef.current = null
   }
   if (wsRef.current) {
+    wsExpectedCloseRef.current = true
     wsRef.current.close()
     wsRef.current = null
   }
@@ -209,6 +225,7 @@ const App: React.FC = () => {
     // === WebSocket ===
     const ws = new WebSocket(WS_URL)
     wsRef.current = ws
+    wsExpectedCloseRef.current = false
 
     ws.onopen = () => {
       ws.send(JSON.stringify({
@@ -233,10 +250,15 @@ const App: React.FC = () => {
 }
 
     ws.onerror = () => {
-      setOutput(prev => [...prev, "[websocket error]"])
+      if (!wsExpectedCloseRef.current) {
+        setOutput(prev => [...prev, "[websocket error]"])
+      }
     }
 
-    ws.onclose = () => {
+    ws.onclose = (event: CloseEvent) => {
+      if (!wsExpectedCloseRef.current && isRunning) {
+        setOutput(prev => [...prev, `[websocket closed] code=${event.code}`])
+      }
       if (wsRef.current === ws) {
         wsRef.current = null
       }
